@@ -226,7 +226,7 @@ def test_twilio_incoming_sms_known_number(base_url):
     logger.info("[test_twilio_incoming_sms_known_number] START")
     import random
     phone_number_int = random.randint(1000000000, 9999999999) # Generate a unique phone number
-    phone_number_str_twilio = "+18005551212" # Twilio format
+    phone_number_str_twilio = f"+1{phone_number_int}" # Twilio format
     
     user_payload = getUniqueUser()
     user_payload["phone_number"] = phone_number_int
