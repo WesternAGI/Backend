@@ -224,7 +224,8 @@ def testQueryEndpoint(base_url):
 
 def test_twilio_incoming_sms_known_number(base_url):
     logger.info("[test_twilio_incoming_sms_known_number] START")
-    phone_number_int = 18005551212 # Example phone number as int
+    import random
+    phone_number_int = random.randint(1000000000, 9999999999) # Generate a unique phone number
     phone_number_str_twilio = "+18005551212" # Twilio format
     
     user_payload = getUniqueUser()

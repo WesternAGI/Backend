@@ -10,36 +10,15 @@ class BaseMemoryManager:
     
     """
 
-    def __init__(self, memory_file: Optional[str] = None, memory_content: Optional[Dict] = None):
-        self.memory_file = memory_file
-        if memory_content is not None:
-            self._memory_content = memory_content
-        elif self.memory_file and os.path.exists(self.memory_file):
-            self._memory_content = self.load()
-        else:
-            self._memory_content = {}
+    def __init__(self, memory_content: Optional[Dict] = None):
+        self._memory_content = memory_content if memory_content is not None else {}
 
     def load(self) -> Dict:
-        if self.memory_file and os.path.exists(self.memory_file):
-            try:
-                with open(self.memory_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError) as e:
-                logging.error(f"Error loading memory file {self.memory_file}: {e}")
-                return {}
-        return {}
+        return self._memory_content
 
     def save(self, memory_content: Optional[Dict] = None) -> None:
-        if self.memory_file:
-            content_to_save = memory_content if memory_content is not None else self._memory_content
-            try:
-                os.makedirs(os.path.dirname(self.memory_file), exist_ok=True)
-                with open(self.memory_file, 'w', encoding='utf-8') as f:
-                    json.dump(content_to_save, f, indent=2, ensure_ascii=False)
-            except IOError as e:
-                logging.error(f"Error saving memory file {self.memory_file}: {e}")
-        else:
-            logging.warning("Memory file path not set. Cannot save memory.")
+        if memory_content is not None:
+            self._memory_content = memory_content
 
     @property
     def memory_type(self) -> str:
@@ -47,17 +26,10 @@ class BaseMemoryManager:
 
     def set(self, key: str, value: Any) -> None:
         """Set a specific field in memory."""
-        
-        # safely update the memory, if the key does not exist, create it
-        # self._memory_content.setdefault(key, {})[key] = value # This line is problematic for top-level keys
         self._memory_content[key] = value
-        self.save() # Save after setting
-        
+
     def get(self, key: str) -> Optional[Any]:
         """Get a specific field from memory."""
-        # Ensure memory is loaded if trying to get a key
-        if not self._memory_content and self.memory_file and os.path.exists(self.memory_file):
-             self._memory_content = self.load()
         return self._memory_content.get(key, None)
 
 class ShortTermMemoryManager(BaseMemoryManager):
@@ -71,8 +43,8 @@ class ShortTermMemoryManager(BaseMemoryManager):
         memory_file (str): Path to the short-term memory storage file
     """
     
-    def __init__(self, memory_file: str = "short_term_memory.json", memory_content: Optional[Dict] = None):
-        super().__init__(memory_file=memory_file, memory_content=memory_content)
+    def __init__(self, memory_content: Optional[Dict] = None):
+        super().__init__(memory_content=memory_content)
 
 
     @property
@@ -99,6 +71,11 @@ class ShortTermMemoryManager(BaseMemoryManager):
         return conversations[-limit:]
 
 class LongTermMemoryManager(BaseMemoryManager):
+    def get_content(self) -> Dict:
+        """Get the entire memory content."""
+        if not self._memory_content and self.memory_file and os.path.exists(self.memory_file):
+            self._memory_content = self.load()
+        return self._memory_content
     """Manages long-term memory operations.
     
     Long-term memory stores persistent user preferences, profile information,
@@ -109,8 +86,8 @@ class LongTermMemoryManager(BaseMemoryManager):
         memory_file (str): Path to the long-term memory storage file
     """
     
-    def __init__(self, memory_file: str = "long_term_memory.json", memory_content: Optional[Dict] = None):
-        super().__init__(memory_file=memory_file, memory_content=memory_content)
+    def __init__(self, memory_content: Optional[Dict] = None):
+        super().__init__(memory_content=memory_content)
 
 
     @property
