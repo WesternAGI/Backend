@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 # Define server URLs
 LOCAL_URL = "http://localhost:7050"
-VERCEL_URL = "https://lms-swart-five.vercel.app"
+VERCEL_URL = "https://thothbackend.vercel.app"
 
 # Get the target environment from environment variable
 # To run tests locally, use: TEST_LOCAL=1 pytest test.py
