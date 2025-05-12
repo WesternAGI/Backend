@@ -9,15 +9,15 @@ logger = logging.getLogger(__name__)
 
 # Define server URLs
 LOCAL_URL = "http://localhost:7050"
-# Canonical Vercel backend deployment URL
-VERCEL_URL = "https://thothbackend.vercel.app"
+# Canonical Railway backend deployment URL
+RAILWAY_URL = "https://web-production-d7d37.up.railway.app"
 
 # Get the target environment from environment variable
 # To run tests locally, use: TEST_LOCAL=1 pytest test.py
 @pytest.fixture(scope="session", autouse=True)
 def base_url():
     use_local = os.environ.get("TEST_LOCAL", "") in ("1", "true", "yes")
-    url = LOCAL_URL if use_local else VERCEL_URL
+    url = LOCAL_URL if use_local else RAILWAY_URL
     logger.info(f"Testing against: {url} {'(LOCAL)' if use_local else '(VERCEL)'}")
     return url
 
