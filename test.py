@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 # Define server URLs
 LOCAL_URL = "http://localhost:7050"
+# Canonical Vercel backend deployment URL
 VERCEL_URL = "https://thothbackend.vercel.app"
 
 # Get the target environment from environment variable
