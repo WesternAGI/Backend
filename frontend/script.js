@@ -20,9 +20,40 @@ document.addEventListener('DOMContentLoaded', () => {
     if (registerForm) {
         registerForm.addEventListener('submit', async (event) => {
             event.preventDefault();
-            const username = document.getElementById('reg-username').value; // Use reg-username for username
-            // const email = document.getElementById('reg-email').value; // Email is not in RegisterRequest schema
+            registerMessage.textContent = ''; // Clear previous messages
+
+            const username = document.getElementById('reg-username').value;
             const password = document.getElementById('reg-password').value;
+            const confirmPassword = document.getElementById('reg-confirm-password').value;
+            const phoneNumberInput = document.getElementById('reg-phone-number').value;
+
+            // Basic password confirmation
+            if (password !== confirmPassword) {
+                registerMessage.textContent = 'Passwords do not match.';
+                registerMessage.style.color = 'red';
+                return; // Stop submission
+            }
+
+            // Prepare phone number: parse as int, send null if empty or invalid
+            let phoneNumber = null;
+            if (phoneNumberInput.trim() !== '') {
+                const parsedPhone = parseInt(phoneNumberInput.trim(), 10);
+                if (!isNaN(parsedPhone)) {
+                    phoneNumber = parsedPhone;
+                } else {
+                     // Optional: Add validation message if phone number format is wrong
+                     // registerMessage.textContent = 'Invalid phone number format.';
+                     // registerMessage.style.color = 'red';
+                     // return; // Or just send null if format doesn't matter strictly here
+                }
+            }
+
+            const payload = {
+                username,
+                password,
+                phone_number: phoneNumber // Include phone_number (will be null if empty/invalid)
+                // Role is not set by the frontend registration form currently
+            };
 
             try {
                 const response = await fetch(`${API_BASE_URL}/register`, { // Updated endpoint
@@ -30,20 +61,36 @@ document.addEventListener('DOMContentLoaded', () => {
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ username, password }), // Sending username and password
+                    body: JSON.stringify(payload), // Sending updated payload
                 });
+
                 const data = await response.json();
                 if (response.ok) {
                     registerMessage.textContent = 'Registration successful! You can now login.';
                     registerMessage.style.color = 'green';
                     registerForm.reset();
                 } else {
-                    registerMessage.textContent = data.detail || 'Registration failed.';
+                    // Check if the detail is an object (FastAPI validation error)
+                    let errorMessage = 'Registration failed.';
+                    if (data.detail && typeof data.detail === 'string') {
+                        errorMessage = data.detail;
+                    } else if (data.detail && Array.isArray(data.detail)) {
+                        // Handle potential validation errors from FastAPI
+                        errorMessage = data.detail.map(err => `${err.loc.slice(-1)[0]}: ${err.msg}`).join(', ');
+                    } else if (response.status === 404 && !response.headers.get('content-type')?.includes('application/json')) {
+                         errorMessage = 'Registration endpoint not found (404). Check deployment logs and configuration.';
+                    }
+                    registerMessage.textContent = errorMessage;
                     registerMessage.style.color = 'red';
                 }
             } catch (error) {
                 console.error('Registration error:', error);
-                registerMessage.textContent = 'An error occurred. Please try again.';
+                // Try to provide more specific feedback for JSON parsing errors
+                if (error instanceof SyntaxError) {
+                    registerMessage.textContent = 'Received an invalid response from the server. Check Vercel function logs.';
+                } else {
+                    registerMessage.textContent = 'An error occurred. Please try again.';
+                }
                 registerMessage.style.color = 'red';
             }
         });

@@ -18,6 +18,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:7040",  # local frontend
         "https://lms-swart-five.vercel.app",  # Vercel frontend domain
+        "https://thothbackend-mpyceqdlr-gads-projects-02bd6234.vercel.app", # Current Vercel frontend
         "https://lms-30o7ryg5m-gads-projects-02bd6234.vercel.app",  # Vercel backend domain (if needed)
     ],
     allow_credentials=True,
