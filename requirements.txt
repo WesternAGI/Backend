@@ -1,0 +1,16 @@
+sphinx
+sphinx-rtd-theme
+fastapi
+uvicorn[standard]
+SQLAlchemy
+psycopg2-binary
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
+twilio
+pydantic
+pytest
+openai
+pytesseract
+psutil
+Flask

@@ -37,30 +37,28 @@ class User(Base):
     
     This model stores user credentials and settings. The password is stored
     as a hash, never in plain text.
-    
-    Attributes:
-        userId: Unique identifier for the user
-        username: Unique username for authentication
-        hashed_password: Bcrypt hash of the user's password
-        max_file_size: Maximum allowed file size in bytes (default: 500MB)
-        role: User's role (int2 with default 0)
-        phone_number: User's phone number
-        files: Relationship to File objects uploaded by this user
-        queries: Relationship to Query objects created by this user
-        sessions: Relationship to Session objects for this user
     """
     __tablename__ = "User"
     userId = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    """Unique identifier for the user"""
     username = Column(String, unique=True, index=True, nullable=False)
+    """Unique username for authentication"""
     hashed_password = Column(String)
+    """Bcrypt hash of the user's password"""
     max_file_size = Column(Integer, default=524288000)  # 500MB default max file size
+    """Maximum allowed file size in bytes (default: 500MB)"""
     role = Column(SmallInteger, default=0)  # Added user's role, int2 with default 0
+    """User's role (int2 with default 0)"""
     phone_number = Column(BigInteger, nullable=True, unique=True, index=True) # Added phone number
+    """User's phone number"""
     
     # Relationships
     files = relationship("File", back_populates="user")
+    """Relationship to File objects uploaded by this user"""
     queries = relationship("Query", back_populates="user")
+    """Relationship to Query objects created by this user"""
     sessions = relationship("Session", back_populates="user")
+    """Relationship to Session objects for this user"""
 
 
 class File(Base):
@@ -81,18 +79,29 @@ class File(Base):
     """
     __tablename__ = "File"
     fileId = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    """Unique identifier for the file"""
     filename = Column(String, nullable=False)
+    """Name of the uploaded file"""
     userId = Column(Integer, ForeignKey("User.userId"), nullable=False)
+    """Foreign key to the user who uploaded the file"""
     path = Column(String, nullable=True)  # Now nullable since we store content in DB
+    """Path where the file is stored on the server (nullable)"""
     size = Column(Integer, nullable=False)
+    """Size of the file in bytes"""
     content = Column(LargeBinary, nullable=True)  # Binary content of the file
+    """Binary content of the file"""
     content_type = Column(String(255), nullable=True)  # MIME type
+    """MIME type of the file"""
     uploaded_at = Column(DateTime, default=datetime.utcnow)
+    """Timestamp when the file was uploaded"""
     
     # Relationships
     user = relationship("User", back_populates="files")
+    """Relationship to the User who owns this file"""
     versions = relationship("FileVersion", back_populates="file", cascade="all, delete-orphan")
+    """Relationship to FileVersion objects for this file"""
     file_metadata = relationship("FileMetadata", back_populates="file", cascade="all, delete-orphan")
+    """Relationship to FileMetadata objects for this file"""
 
 
 class Query(Base):
@@ -109,14 +118,21 @@ class Query(Base):
     """
     __tablename__ = "Query"
     queryId = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    """Unique identifier for the query"""
     userId = Column(Integer, ForeignKey("User.userId"), nullable=False)
+    """Foreign key to the user who made the query"""
     chatId = Column(String, nullable=True)
+    """Identifier for grouping related queries into conversations"""
     query_text = Column(Text, nullable=False)
+    """The text of the user's query"""
     response = Column(Text, nullable=True)
+    """The AI response to the query"""
     created_at = Column(DateTime, default=datetime.utcnow)
+    """Timestamp when the query was made"""
     
     # Relationships
     user = relationship("User", back_populates="queries")
+    """Relationship to the User who made this query"""
 
 
 class Session(Base):
@@ -131,12 +147,18 @@ class Session(Base):
     """
     __tablename__ = "Session"
     sessionId = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    """Unique identifier for the session"""
     userId = Column(Integer, ForeignKey("User.userId"), nullable=False)
+    """Foreign key to the user who owns this session"""
     token = Column(String, nullable=False)
+    """Session token for authentication"""
     expires_at = Column(DateTime, nullable=False)
+    """Timestamp when the session expires"""
     
     # Relationships
     user = relationship("User", back_populates="sessions")
+    """Relationship to the User who owns this session"""
+
 
 class FileVersion(Base):
     """FileVersion model for tracking different versions of files.
@@ -153,15 +175,23 @@ class FileVersion(Base):
     """
     __tablename__ = "FileVersion"
     versionId = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    """Unique identifier for the version"""
     fileId = Column(Integer, ForeignKey("File.fileId"), nullable=False)
+    """Foreign key to the file this version belongs to"""
     userId = Column(Integer, ForeignKey("User.userId"), nullable=False)
+    """Foreign key to the user who created this version"""
     content = Column(LargeBinary, nullable=True)
+    """Binary content of this version"""
     size = Column(Integer, nullable=False)
+    """Size of the file version in bytes"""
     version_number = Column(Integer, nullable=False)
+    """Sequential version number for this file"""
     created_at = Column(DateTime, default=datetime.utcnow)
+    """Timestamp when the version was created"""
     
     # Relationships
     file = relationship("File", back_populates="versions")
+    """Relationship to the File this version belongs to"""
     
     # Ensure each file can only have one version with a specific number
     __table_args__ = (UniqueConstraint('fileId', 'version_number', name='_file_version_uc'),)
@@ -180,13 +210,19 @@ class FileMetadata(Base):
     """
     __tablename__ = "FileMetadata"
     metadataId = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    """Unique identifier for the metadata entry"""
     fileId = Column(Integer, ForeignKey("File.fileId"), nullable=False)
+    """Foreign key to the file this metadata belongs to"""
     key = Column(String(255), nullable=False)
+    """Name of the metadata property"""
     value = Column(Text, nullable=True)
+    """Value of the metadata property"""
     created_at = Column(DateTime, default=datetime.utcnow)
+    """Timestamp when the metadata was created"""
     
     # Relationships
     file = relationship("File", back_populates="file_metadata")
+    """Relationship to the File this metadata belongs to"""
     
     # Ensure each file can only have one entry for a specific key
     __table_args__ = (UniqueConstraint('fileId', 'key', name='_file_metadata_key_uc'),)

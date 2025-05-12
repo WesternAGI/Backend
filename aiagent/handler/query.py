@@ -27,6 +27,10 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+_MODULE_PATH = os.path.dirname(os.path.abspath(__file__))
+_BOT_PATH = os.path.dirname(_MODULE_PATH) # Should be aiagent directory
+DEFAULT_DATA_PATH = os.path.join(_BOT_PATH, "data")
+
 from aiagent.memory.memory_manager import BaseMemoryManager, LongTermMemoryManager, ShortTermMemoryManager
 from aiagent.context.reference import read_references
 
@@ -199,6 +203,7 @@ def summarize_conversation(query: str, response: str) -> str:
         logging.error(f"Error generating conversation summary: {e}")
         return "Error generating summary."
 
+
 def update_memory(query: str, response: str, memory: BaseMemoryManager):
     # Initialize client and check API key here
     try:
@@ -257,7 +262,6 @@ def update_memory(query: str, response: str, memory: BaseMemoryManager):
         logging.exception(f"Failed to update memory: {e}")
         return False
 
-    
 
 def ask_ai(
     query: str,
@@ -281,17 +285,21 @@ def ask_ai(
         str: The AI's response
     """
     
-    # Load long-term and short-term memory using managers
+    # Determine memory file paths
     if client_dir:
-        logging.info(f"Loading memory from directory: {client_dir}")
-        long_term_manager = LongTermMemoryManager(client_dir)
-        short_term_manager = ShortTermMemoryManager(client_dir)
-    else :
-        logging.info("Loading default memory")
-        long_term_manager = LongTermMemoryManager()
-        short_term_manager = ShortTermMemoryManager()
-    long_term_memory = long_term_manager.load()
-    short_term_memory = short_term_manager.load()
+        base_memory_path = client_dir
+        logging.info(f"Using client-provided directory for memory: {base_memory_path}")
+    else:
+        base_memory_path = DEFAULT_DATA_PATH
+        logging.info(f"Using default data directory for memory: {base_memory_path}")
+        os.makedirs(base_memory_path, exist_ok=True) # Ensure default data directory exists
+
+    long_term_memory_file = os.path.join(base_memory_path, "long_term_memory.json")
+    short_term_memory_file = os.path.join(base_memory_path, "short_term_memory.json")
+
+    # Instantiate memory managers with correct file paths
+    long_term_manager = LongTermMemoryManager(memory_file=long_term_memory_file)
+    short_term_manager = ShortTermMemoryManager(memory_file=short_term_memory_file)
 
     # Read all reference files
     try:
@@ -312,8 +320,8 @@ def ask_ai(
     # Query the AI with context
     response = query_openai(
         query=query,
-        long_term_memory=long_term_memory,
-        short_term_memory=short_term_memory,
+        long_term_memory=long_term_manager,
+        short_term_memory=short_term_manager,
         aux_data=aux_data,
         references=references,
         max_tokens=max_tokens,
@@ -324,7 +332,8 @@ def ask_ai(
     if not response.startswith("Error:") and update_memory:
         summary = summarize_conversation(query, response)
         # update short term memory: add to the conversations list
-        conversations = short_term_memory.get("conversations", [])
+        conversations_data = short_term_manager.get("conversations") 
+        conversations = conversations_data if conversations_data is not None else []
         short_term_manager.set("conversations", conversations + [{"query": query, "response": response, "summary": summary}])
         
     else:

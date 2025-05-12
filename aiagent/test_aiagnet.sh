@@ -4,9 +4,9 @@
 
 set -e
 # Get the absolute path to the bot root directory
-SCRIPT_DIR="$(cd -- "${0:A:h}" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BOT_DIR="${SCRIPT_DIR}/.."
-VENV_DIR="$BOT_DIR/venv"
+VENV_DIR="$BOT_DIR/.venv"
 PYTHON=python3
 
 cd "$BOT_DIR"
@@ -16,7 +16,7 @@ cd "$BOT_DIR"
 #   $PYTHON -m venv "$VENV_DIR"
 # fi
 
-source "$VENV_DIR/bin/activate"
+source "${SCRIPT_DIR}/../.venv/bin/activate"
 
 # # Install dependencies if requirements.txt exists
 # if [ -f requirements.txt ]; then

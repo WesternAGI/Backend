@@ -13,34 +13,30 @@ class RegisterRequest(BaseModel):
     
     Validates incoming registration requests, ensuring they contain
     the required username and password fields.
-    
-    Attributes:
-        username: Unique identifier for the user
-        password: User's password (will be hashed before storage)
-        role: Optional role for the user
-        phone_number: Optional phone number for the user
     """
     username: str
+    """The desired username for the new account."""
     password: str
+    """The password for the new account."""
     role: Optional[int] = None
+    """The role assigned to the user (default: None)."""
     phone_number: Optional[int] = Field(default=None, description="User's phone number")
+    """The user's phone number (optional)."""
 
 class UserResponse(BaseModel):
     """Schema for returning user information.
     
     Excludes sensitive data like passwords.
-    
-    Attributes:
-        userId: Unique identifier for the user
-        username: User's username
-        max_file_size: Maximum allowed file size in bytes for the user
-        role: User's role
-        phone_number: Optional phone number for the user
     """
     userId: int
+    """The unique identifier of the user."""
     username: str
+    """The username of the user."""
     max_file_size: int
+    """The maximum file upload size allowed for the user in bytes."""
     role: int
+    """The role of the user."""
     phone_number: Optional[int] = None
+    """The user's phone number (if available)."""
 
     model_config = ConfigDict(from_attributes=True) #  Ensures compatibility with SQLAlchemy models
