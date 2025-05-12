@@ -6,10 +6,10 @@
       "use": "@vercel/python"
     }
   ],
-  "routes": [
+  "rewrites": [
     {
-      "src": "/(.*)",
-      "dest": "server/main.py"
+      "source": "/(login|register|profile|query)",
+      "destination": "/server/main.py"
     }
   ]
 }

@@ -14,7 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const chatHistory = document.getElementById('chat-history');
     const logoutButton = document.getElementById('logout-button');
 
-    const API_BASE_URL = 'http://localhost:8000'; // Adjust if your backend runs on a different port
+    const API_BASE_URL = ''; // API calls will use relative paths
 
     // Handle Registration
     if (registerForm) {
@@ -53,35 +53,74 @@ document.addEventListener('DOMContentLoaded', () => {
     if (loginForm) {
         loginForm.addEventListener('submit', async (event) => {
             event.preventDefault();
+            loginMessage.textContent = ''; // Clear previous messages
             const email = document.getElementById('login-email').value; // This will be sent as 'username' for OAuth2
             const password = document.getElementById('login-password').value;
 
             const formData = new URLSearchParams();
-            formData.append('username', email); // FastAPI's OAuth2PasswordRequestForm expects 'username'
+            formData.append('username', email);
             formData.append('password', password);
 
             try {
-                const response = await fetch(`${API_BASE_URL}/login`, { // Updated endpoint
+                // Step 1: Get the access token
+                const tokenResponse = await fetch(`${API_BASE_URL}/login`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/x-www-form-urlencoded',
                     },
                     body: formData,
                 });
-                const data = await response.json();
-                if (response.ok) {
-                    loginMessage.textContent = 'Login successful!';
-                    loginMessage.style.color = 'green';
-                    localStorage.setItem('accessToken', data.access_token);
-                    // Redirect to chat page
-                    window.location.href = 'chat.html';
-                } else {
-                    loginMessage.textContent = data.detail || 'Login failed. Check credentials.';
+
+                const tokenData = await tokenResponse.json();
+
+                if (!tokenResponse.ok) {
+                    loginMessage.textContent = tokenData.detail || 'Login failed. Check credentials.';
+                    loginMessage.style.color = 'red';
+                    return; // Stop if token request failed
+                }
+
+                const accessToken = tokenData.access_token;
+                localStorage.setItem('accessToken', accessToken);
+
+                // Step 2: Fetch user profile to check role
+                try {
+                    const profileResponse = await fetch(`${API_BASE_URL}/profile`, {
+                        headers: {
+                            'Authorization': `Bearer ${accessToken}`
+                        }
+                    });
+
+                    if (!profileResponse.ok) {
+                         // Handle profile fetch error (e.g., token became invalid quickly?)
+                        localStorage.removeItem('accessToken'); // Clean up token
+                        loginMessage.textContent = 'Login succeeded, but failed to fetch profile. Please try again.';
+                        loginMessage.style.color = 'red';
+                        return;
+                    }
+
+                    const user = await profileResponse.json();
+
+                    // Step 3: Redirect based on role
+                    if (user.role === 0) { // Assuming 0 is the student role
+                        loginMessage.textContent = 'Login successful! Redirecting...';
+                        loginMessage.style.color = 'green';
+                        window.location.href = 'chat.html'; // Redirect students to chat
+                    } else { // Admin or other roles
+                        loginMessage.textContent = 'Admin login successful. Dashboard not available yet.';
+                        loginMessage.style.color = 'blue';
+                        // Stay on the login page for admins for now
+                    }
+
+                } catch (profileError) {
+                    console.error('Profile fetch error:', profileError);
+                    localStorage.removeItem('accessToken'); // Clean up token
+                    loginMessage.textContent = 'Error fetching user profile after login.';
                     loginMessage.style.color = 'red';
                 }
-            } catch (error) {
-                console.error('Login error:', error);
-                loginMessage.textContent = 'An error occurred. Please try again.';
+
+            } catch (loginError) {
+                console.error('Login error:', loginError);
+                loginMessage.textContent = 'An error occurred during login. Please try again.';
                 loginMessage.style.color = 'red';
             }
         });
