@@ -98,7 +98,7 @@ def root():
     Returns:
         dict: A simple message indicating the API is operational
     """
-    return {"message": "LMS API is running"}
+    return {"message": "Thoth API is running"}
 
 @router.get("/favicon.ico")
 def favicon():

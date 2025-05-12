@@ -1,4 +1,4 @@
-"""LMS Platform Main Application Module.
+"""Thoth Platform Main Application Module.
 
 This module initializes the FastAPI application, sets up CORS middleware,
 and includes routes. It serves as the entry point for the LMS platform.
