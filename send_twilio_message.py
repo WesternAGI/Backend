@@ -8,6 +8,12 @@ def send_twilio_message():
     from_number = os.getenv('TWILIO_FROM_NUMBER')
     to_number = os.getenv('TWILIO_TO_NUMBER')
 
+    print("Twilio credentials loaded successfully.")
+    print(f"Account SID: {account_sid}")
+    print(f"Auth Token: {auth_token}")
+    print(f"From Number: {from_number}")
+    print(f"To Number: {to_number}")
+    
     client = Client(account_sid, auth_token)
 
     message = client.messages.create(
@@ -15,7 +21,7 @@ def send_twilio_message():
         from_=from_number,
         to=to_number
     )
-    
+
     print(f"Scheduled message sent to Twilio number: {to_number}")
 
 
