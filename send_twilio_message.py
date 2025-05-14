@@ -10,13 +10,14 @@ def send_twilio_message():
 
     client = Client(account_sid, auth_token)
 
-    print(f"Scheduled message sent to Twilio number: {to_number}")
+    message = client.messages.create(
         body="This is a scheduled message from your cron job!",
         from_=from_number,
         to=to_number
     )
+    
+    print(f"Scheduled message sent to Twilio number: {to_number}")
 
-    print("Twilio message function executed successfully.")
 
 if __name__ == "__main__":
     send_twilio_message()
