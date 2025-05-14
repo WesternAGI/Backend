@@ -1,0 +1,8 @@
+{
+  "cron": [
+    {
+      "schedule": "0 * * * *",
+      "command": "python3 send_twilio_message.py"
+    }
+  ]
+}
