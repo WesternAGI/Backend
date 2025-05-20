@@ -382,8 +382,6 @@ async def queryEndpoint(request: Request, user: User = Depends(get_current_user)
         return JSONResponse({"error": f"Invalid JSON in request body: {str(json_err)}"}, status_code=400)
         
 
-    print("body:", body)
-
     try:
         
         # Check for required fields
@@ -483,7 +481,7 @@ async def queryEndpoint(request: Request, user: User = Depends(get_current_user)
                 from aiagent.handler.query import summarize_conversation, update_memory
                 summary = summarize_conversation(user_query, response)
                 updated = update_memory(user_query, response, long_term_memory) 
-                
+                print("updated:", updated)
                 # Update conversations
                 shortterm_memory_data["conversations"] = conversations + [{
                     "query": user_query, 

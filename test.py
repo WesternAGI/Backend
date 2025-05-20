@@ -189,6 +189,7 @@ def testQueryEndpoint(base_url):
     token = loginUser(base_url, user_payload) # Pass the dict part
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     url = f"{base_url}/query"
+    
     # Case 1: Missing JSON body
     logger.info("[testQueryEndpoint] Case 1: Missing JSON body")
     resp = requests.post(url, headers=headers)
