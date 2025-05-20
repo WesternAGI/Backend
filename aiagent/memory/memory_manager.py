@@ -27,6 +27,8 @@ class BaseMemoryManager:
     def set(self, key: str, value: Any) -> None:
         """Set a specific field in memory."""
         self._memory_content[key] = value
+        print("get value:", self.get(key))
+        print("get memory content:", self._memory_content)
 
     def get(self, key: str) -> Optional[Any]:
         """Get a specific field from memory."""

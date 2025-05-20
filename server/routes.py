@@ -496,7 +496,7 @@ async def queryEndpoint(request: Request, user: User = Depends(get_current_user)
                         updated_content = long_term_memory.get_content()
                         longterm_memory_file.content = json.dumps(updated_content).encode('utf-8')
                         longterm_memory_file.size = len(longterm_memory_file.content)
-                        db.add(longterm_memory_file)
+                        # db.add(longterm_memory_file)
                         db.commit()
                     else:
 

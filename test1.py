@@ -10,7 +10,7 @@ import sys
 # warnings.filterwarnings("ignore", category=NotOpenSSLWarning)
 
 RAILWAY_URL = "https://web-production-d7d37.up.railway.app"
-
+LOCAL_URL = "http://localhost:7050"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -144,7 +144,7 @@ def testQueryEndpoint(base_url):
 
     # Case 4: Valid request
     logger.info("[testQueryEndpoint] Case 4: Valid request")
-    resp = requests.post(url, headers=headers, json={"query": "I am now living in vancouver, bc.", "chatId": "chat1", "pageContent": "Some content"})
+    resp = requests.post(url, headers=headers, json={"query": "where am I living?", "chatId": "chat1", "pageContent": "Some content"})
     # resp = requests.post(url, headers=headers, json={"query": "what was our last conversation about?", "chatId": "chat1", "pageContent": "Some content"})
     logger.info(f"[testQueryEndpoint] Case 4 Response: {resp.status_code}, {resp.text}")
     assert resp.status_code in (200, 500), f"[testQueryEndpoint] Case 4 failed: {resp.text}"

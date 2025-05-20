@@ -244,7 +244,7 @@ def update_memory(query: str, response: str, memory: BaseMemoryManager):
 
         # Extract and clean up the summary
         suggested_updates = completion.choices[0].message.content
-        
+        print("suggested_updates:", suggested_updates)
         logging.info(f"Suggested updates: {suggested_updates}")
         # parse the suggested updates
         updates = suggested_updates.split(",")
@@ -255,9 +255,11 @@ def update_memory(query: str, response: str, memory: BaseMemoryManager):
             if update.startswith("None"):
                 continue
             key, value = update.split(":")
+            print("key:", key, " value:", value)
             memory.set(key.strip(), value.strip())
             updated = True
 
+        print("Memory updated:", memory._memory_content)
         logging.info(f"Memory updated: {memory._memory_content}")
         return updated
     except Exception as e:
