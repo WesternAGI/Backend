@@ -362,32 +362,11 @@ async def upload_file(file: FastAPIFile = File(...), user: User = Depends(get_cu
         db.commit()
         db.refresh(db_file)
         
-        # Now create the initial version with the file ID
-        initial_version = FileVersion(
-            fileId=db_file.fileId,
-            userId=user.userId,
-            content=contents,
-            size=file_size,
-            version_number=1
-        )
-        db.add(initial_version)
-        
-        # Add basic metadata
-        content_type_metadata = FileMetadata(
-            fileId=db_file.fileId,
-            key="content_type",
-            value=content_type
-        )
-        db.add(content_type_metadata)
-        
-        db.commit()
-        
         return {
             "filename": file.filename, 
             "size": file_size,
             "fileId": db_file.fileId,
             "content_type": content_type,
-            "version": 1,
             "uploaded_at": db_file.uploaded_at
         }
     except Exception as e:
@@ -772,46 +751,29 @@ def download_file(fileId: int, user: User = Depends(get_current_user), db: Sessi
         # First try to get content directly from the database
         if file_record.content is not None:
             file_content = file_record.content
+            content_type = file_record.content_type or "application/octet-stream"
         else:
             # Fall back to the filesystem if content is not in the database
             filepath = file_record.path
             if filepath and os.path.exists(filepath):
                 with open(filepath, "rb") as f:
                     file_content = f.read()
+                content_type = file_record.content_type or "application/octet-stream"
             else:
                 # Try standard path as fallback
                 user_folder = os.path.join(ASSETS_FOLDER, str(user.userId))
                 fallback_path = os.path.join(user_folder, file_record.filename)
-                
                 if os.path.exists(fallback_path):
                     with open(fallback_path, "rb") as f:
                         file_content = f.read()
+                    content_type = file_record.content_type or "application/octet-stream"
                 else:
-                    # Check if we have any versions of this file
-                    latest_version = db.query(FileVersion).filter(
-                        FileVersion.fileId == fileId
-                    ).order_by(FileVersion.version_number.desc()).first()
-                    
-                    if latest_version and latest_version.content is not None:
-                        file_content = latest_version.content
-                    else:
-                        raise HTTPException(status_code=404, detail="File not found on server")
+                    raise HTTPException(status_code=404, detail="File content not found")
         
-        # Determine content type
-        content_type = file_record.content_type
-        if not content_type:
-            # Look for content type in metadata
-            metadata = db.query(FileMetadata).filter(
-                FileMetadata.fileId == fileId,
-                FileMetadata.key == "content_type"
-            ).first()
-            
-            if metadata and metadata.value:
-                content_type = metadata.value
-            else:
-                # Guess from filename
-                import mimetypes
-                content_type = mimetypes.guess_type(file_record.filename)[0] or "application/octet-stream"
+        # Guess content type from filename if not set
+        if not content_type or content_type == "application/octet-stream":
+            import mimetypes
+            content_type = mimetypes.guess_type(file_record.filename)[0] or "application/octet-stream"
         
         # Stream the file from memory
         def iterfile():

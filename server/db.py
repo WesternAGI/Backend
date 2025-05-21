@@ -74,8 +74,6 @@ class File(Base):
         content_type: MIME type of the file
         uploaded_at: Timestamp when the file was uploaded
         user: Relationship to the User who owns this file
-        versions: Relationship to FileVersion objects for this file
-        metadata: Relationship to FileMetadata objects for this file
     """
     __tablename__ = "File"
     fileId = Column(Integer, primary_key=True, autoincrement=True, index=True)
@@ -156,72 +154,7 @@ class Session(Base):
     """Relationship to the User who owns this session"""
 
 
-class FileVersion(Base):
-    """FileVersion model for tracking different versions of files.
-    
-    Attributes:
-        versionId: Unique identifier for the version
-        fileId: Foreign key to the file this version belongs to
-        userId: Foreign key to the user who created this version
-        content: Binary content of this version
-        size: Size of the file version in bytes
-        version_number: Sequential version number for this file
-        created_at: Timestamp when the version was created
-        file: Relationship to the File this version belongs to
-    """
-    __tablename__ = "FileVersion"
-    versionId = Column(Integer, primary_key=True, autoincrement=True, index=True)
-    """Unique identifier for the version"""
-    fileId = Column(Integer, ForeignKey("File.fileId"), nullable=False)
-    """Foreign key to the file this version belongs to"""
-    userId = Column(Integer, ForeignKey("User.userId"), nullable=False)
-    """Foreign key to the user who created this version"""
-    content = Column(LargeBinary, nullable=True)
-    """Binary content of this version"""
-    size = Column(Integer, nullable=False)
-    """Size of the file version in bytes"""
-    version_number = Column(Integer, nullable=False)
-    """Sequential version number for this file"""
-    created_at = Column(DateTime, default=datetime.utcnow)
-    """Timestamp when the version was created"""
-    
-    # Relationships
-    file = relationship("File", back_populates="versions")
-    """Relationship to the File this version belongs to"""
-    
-    # Ensure each file can only have one version with a specific number
-    __table_args__ = (UniqueConstraint('fileId', 'version_number', name='_file_version_uc'),)
 
-
-class FileMetadata(Base):
-    """FileMetadata model for storing additional file properties.
-    
-    Attributes:
-        metadataId: Unique identifier for the metadata entry
-        fileId: Foreign key to the file this metadata belongs to
-        key: Name of the metadata property
-        value: Value of the metadata property
-        created_at: Timestamp when the metadata was created
-        file: Relationship to the File this metadata belongs to
-    """
-    __tablename__ = "FileMetadata"
-    metadataId = Column(Integer, primary_key=True, autoincrement=True, index=True)
-    """Unique identifier for the metadata entry"""
-    fileId = Column(Integer, ForeignKey("File.fileId"), nullable=False)
-    """Foreign key to the file this metadata belongs to"""
-    key = Column(String(255), nullable=False)
-    """Name of the metadata property"""
-    value = Column(Text, nullable=True)
-    """Value of the metadata property"""
-    created_at = Column(DateTime, default=datetime.utcnow)
-    """Timestamp when the metadata was created"""
-    
-    # Relationships
-    file = relationship("File", back_populates="file_metadata")
-    """Relationship to the File this metadata belongs to"""
-    
-    # Ensure each file can only have one entry for a specific key
-    __table_args__ = (UniqueConstraint('fileId', 'key', name='_file_metadata_key_uc'),)
 
 
 # DO NOT run migrations or create tables at import time in serverless environments!
