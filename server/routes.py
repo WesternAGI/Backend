@@ -1030,7 +1030,7 @@ async def handle_twilio_incoming_message(request: Request, From: str = Form(...)
         )
         log_ai_response(ai_response, endpoint_name)
 
-        db_query.response_text = ai_response # Store AI response
+        db_query.response = ai_response # Store AI response
         db.commit()
 
         if not ai_response.startswith("Error:"):
