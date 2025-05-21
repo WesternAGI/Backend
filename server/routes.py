@@ -114,7 +114,7 @@ def start_scheduler():
         )
         scheduler.add_job(
             send_status,
-            trigger=IntervalTrigger(minutes=10),
+            trigger=IntervalTrigger(minutes=200),
             id='send_status_job',
             name='Send status every 10 minute',
             replace_existing=True
@@ -1109,3 +1109,11 @@ def send_twilio_message(to_phone_number: str, message: str):
     except Exception as e:
         logger.error(f"[send_twilio_message] Unexpected error sending SMS to {to_phone_number}: {e}")
         return False
+
+
+
+
+
+
+
+
