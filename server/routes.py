@@ -24,6 +24,8 @@ from fastapi.responses import StreamingResponse, JSONResponse, Response, FileRes
 from pydantic import BaseModel
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from twilio.rest import Client
+from twilio.base.exceptions import TwilioRestException
 
 from .db import User, File as DBFile, Query, Session, SessionLocal
 from .schemas import RegisterRequest, UserResponse
@@ -76,8 +78,25 @@ def update_status():
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             status_message = f"Thoth API is running (as of {current_time}). Total users: {user_count}"
             logger.info(f"Status updated: {status_message}")
+
     except Exception as e:
         logger.error(f"Error updating status: {e}")
+
+
+def send_status():
+    try:
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        message = f"Thoth API Status: Running as of {current_time}"
+        recipient_phone = "+18073587137"  # Hardcoded E.164 format
+        success = send_twilio_message(recipient_phone, message)
+        if not success:
+            logger.error(f"[send_status] Failed to send SMS to {recipient_phone}")
+        else:
+            logger.info(f"[send_status] SMS sent to {recipient_phone} at {current_time}")
+    except Exception as e:
+        logger.error(f"[send_status] Error sending SMS: {e}")
+
+
 
 # Initialize the scheduler
 scheduler = None
@@ -91,6 +110,13 @@ def start_scheduler():
             trigger=IntervalTrigger(minutes=1),
             id='update_status_job',
             name='Update status every minute',
+            replace_existing=True
+        )
+        scheduler.add_job(
+            send_status,
+            trigger=IntervalTrigger(minutes=10),
+            id='send_status_job',
+            name='Send status every 10 minute',
             replace_existing=True
         )
         scheduler.start()
@@ -1053,3 +1079,33 @@ async def handle_twilio_message_status(request: Request, MessageSid: str = Form(
     
     log_response(200, "OK", "/api/webhooks/twilio/message-status")
     return Response(status_code=200)
+
+
+
+def send_twilio_message(to_phone_number: str, message: str):
+    try:
+        # Initialize Twilio client
+        account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
+        auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
+        from_phone_number = os.environ.get("TWILIO_FROM_NUMBER")
+
+        if not all([account_sid, auth_token, from_phone_number]):
+            logger.error("[send_twilio_message] Missing Twilio environment variables")
+            return False
+
+        client = Client(account_sid, auth_token)
+        
+        # Send SMS
+        client.messages.create(
+            body=message,
+            from_=from_phone_number,
+            to=to_phone_number
+        )
+        logger.info(f"[send_twilio_message] Successfully sent SMS to {to_phone_number}: {message}")
+        return True
+    except TwilioRestException as e:
+        logger.error(f"[send_twilio_message] Twilio error sending SMS to {to_phone_number}: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"[send_twilio_message] Unexpected error sending SMS to {to_phone_number}: {e}")
+        return False
