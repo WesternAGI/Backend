@@ -98,10 +98,6 @@ class File(Base):
     # Relationships
     user = relationship("User", back_populates="files")
     """Relationship to the User who owns this file"""
-    versions = relationship("FileVersion", back_populates="file", cascade="all, delete-orphan")
-    """Relationship to FileVersion objects for this file"""
-    file_metadata = relationship("FileMetadata", back_populates="file", cascade="all, delete-orphan")
-    """Relationship to FileMetadata objects for this file"""
 
 
 class Query(Base):

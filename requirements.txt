@@ -14,3 +14,4 @@ openai
 pytesseract
 psutil
 Flask
+apscheduler

@@ -10,12 +10,15 @@ This module defines all the API endpoints for the LMS platform, including:
 
 import os
 import json
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile as FastAPIFile, File, Request, Header, Form, Body
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from typing import Dict, List, Optional
 from fastapi.responses import StreamingResponse, JSONResponse, Response, FileResponse
-from .db import User, File as DBFile, Query, Session, SessionLocal, FileVersion, FileMetadata
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from .db import User, File as DBFile, Query, Session, SessionLocal
 from .schemas import RegisterRequest, UserResponse
 from .auth import (
     get_db, get_password_hash, authenticate_user, create_access_token,
@@ -36,12 +39,45 @@ from .auth import get_db
 
 router = APIRouter()
 
+# Global variable to store the status message
+status_message = "Thoth API is starting up..."
+
+# Function to update the status message
+def update_status():
+    global status_message
+    try:
+        with SessionLocal() as db:
+            user_count = db.query(User).count()
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            status_message = f"Thoth API is running (as of {current_time}). Total users: {user_count}"
+            logger.info(f"Status updated: {status_message}")
+    except Exception as e:
+        logger.error(f"Error updating status: {e}")
+
+# Initialize the scheduler
+scheduler = BackgroundScheduler()
+scheduler.add_job(
+    update_status,
+    trigger=IntervalTrigger(minutes=1),
+    id='update_status_job',
+    name='Update status every minute',
+    replace_existing=True
+)
+
+# Start the scheduler when the module loads
+scheduler.start()
+logger.info("Scheduler started for status updates")
+
+# Ensure the scheduler shuts down when the app shuts down
+import atexit
+atexit.register(lambda: scheduler.shutdown())
+
 # Set up logger
 logger = logging.getLogger("lms.server")
 logger.setLevel(logging.INFO)
 
 # --- Logging configuration: print to console and log to file (if possible) ---
-import os
+
 formatter = logging.Formatter('[%(asctime)s] %(levelname)s %(name)s: %(message)s')
 
 # Always log to console (stdout), which Vercel captures
@@ -93,12 +129,12 @@ os.makedirs(ASSETS_FOLDER, exist_ok=True)
 
 @router.get("/")
 def root():
-    """Root endpoint that confirms the API is running.
+    """Root endpoint that shows API status and statistics.
     
     Returns:
-        dict: A simple message indicating the API is operational
+        dict: API status message including current time and user count
     """
-    return {"message": "Thoth API is running"}
+    return {"message": status_message}
 
 @router.get("/favicon.ico")
 def favicon():
@@ -150,13 +186,14 @@ def register(req: RegisterRequest, db: SessionLocal = Depends(get_db)):
     os.makedirs(user_folder, exist_ok=True)
     
     # Create shortterm and longterm memory files for the user
-    shortterm_memory = {"conversations": [], "active_url": {}}
+    shortterm_memory = {"conversations": [], "active": [{"device": "", "path": "", "title": "", "timestamp": ""}]}
     longterm_memory = {
-        "user_profile": {
-            "username": new_user.username,  # Use username from the persisted user object
-            "role": new_user.role          # Add user's role from persisted user object
-        },
-        "preferences": {"language": "English"},
+        "userProfile_username": new_user.username,  
+        "userProfile_role": new_user.role,
+        "userProfile_language": "English",
+        "userProfile_age": "25",
+        "userProfile_gender": "male",
+        "userProfile_country"
         "values": {"age": "25", "gender": "male", "country": "Canada", "city": "London"},
         "beliefs": ["patient", "caring", "helpful", "knowledgeable", "friendly"],
         "phone_number": new_user.phone_number  # Use phone_number from persisted user object
@@ -481,7 +518,7 @@ async def queryEndpoint(request: Request, user: User = Depends(get_current_user)
                 from aiagent.handler.query import summarize_conversation, update_memory
                 summary = summarize_conversation(user_query, response)
                 updated = update_memory(user_query, response, long_term_memory) 
-                print("updated:", updated)
+                
                 # Update conversations
                 shortterm_memory_data["conversations"] = conversations + [{
                     "query": user_query, 
@@ -557,72 +594,111 @@ async def queryEndpoint(request: Request, user: User = Depends(get_current_user)
         log_error(f"AI query failed: {str(e)}", exc=e, endpoint="/query")
         raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
 
-@router.post("/active_url")
-async def active_url(request: Request):
-    """Track active URL being viewed by user.
+@router.post("/active")
+async def update_active_item(
+    request: Request, 
+    user: User = Depends(get_current_user),
+    db: SessionLocal = Depends(get_db)
+):
+    """Update or add an active item for the authenticated user.
     
-    Records the URL and page title the user is currently viewing.
-    No authentication required for this endpoint.
+    Records the device, path, and title of the active item being viewed.
+    If an entry with the same device exists, it will be updated.
     
     Args:
-        request: The HTTP request containing the URL data
+        request: The HTTP request containing the active item data
+        user: The authenticated user
+        db: Database session
         
     Returns:
-        dict: Success status
+        dict: Success status and updated active items
         
     Raises:
-        HTTPException: 400 if URL is missing
-    """
-    """
-    Receive active URL updates from the extension and return a success response.
-    Expected POST data:
-        url (str): The current active URL
-        title (str, optional): The page title
-    Returns:
-        JSON response with status acknowledgment
+        HTTPException: 400 if required fields are missing
+        HTTPException: 404 if user's short-term memory is not found
     """
     try:
         # Log request start
-        log_request_start('/active_url', request.method, dict(request.headers), request.client.host if request.client else None)
+        log_request_start('/active', request.method, dict(request.headers), request.client.host if request.client else None)
         
-        # First check if there's any content in the request body
-        body_bytes = await request.body()
-        if not body_bytes:
-            log_error("Empty request body", None, {"endpoint": "/active_url"}, "/active_url")
-            return JSONResponse({"error": "Empty request body"}, status_code=400)
-            
-        # Try to parse the JSON body
+        # Parse request body
         try:
             data = await request.json()
-            log_request_payload(data, '/active_url')
+            log_request_payload(data, '/active')
         except json.JSONDecodeError as json_err:
-            log_error(f"Invalid JSON: {str(json_err)}", json_err, {"endpoint": "/active_url"}, "/active_url")
+            log_error(f"Invalid JSON: {str(json_err)}", json_err, {"endpoint": "/active"}, "/active")
             return JSONResponse({"error": f"Invalid JSON in request body: {str(json_err)}"}, status_code=400)
-        # Validate fields
-        url = data.get('url', '') if data else ''
-        title = data.get('title', '') if data else ''
-        log_validation('url', url, bool(url), '/active_url')
-        log_validation('title', title, bool(title), '/active_url')
-        if data is None:
-            log_error("No JSON data provided", None, {"endpoint": "/active_url"}, "/active_url")
-            return JSONResponse({"error": "No JSON data provided"}, status_code=400)
-        if not url:
-            log_error("Missing URL", None, {"endpoint": "/active_url"}, "/active_url")
-            return JSONResponse({"error": "Missing URL"}, status_code=400)
-        # Log URL details
-        logger.info(f"[SERVER] Active URL: {url[:100]}")
-        if title:
-            logger.info(f"[SERVER] Page title: {title[:50]}")
-        # Log response
-        response = {"data": {"status": "success"}}
-        log_response(200, response, '/active_url')
+            
+        # Validate required fields
+        device = data.get('device')
+        path = data.get('path', '')
+        title = data.get('title', '')
+        
+        if not device:
+            log_error("Missing device identifier", None, {"endpoint": "/active"}, "/active")
+            return JSONResponse({"error": "Missing device identifier"}, status_code=400)
+            
+        # Get user's short-term memory file
+        stm_file = db.query(DBFile).filter(
+            DBFile.userId == user.userId,
+            DBFile.filename == "short_term_memory.json"
+        ).first()
+        
+        if not stm_file:
+            log_error("Short-term memory not found", None, {"userId": user.userId}, "/active")
+            raise HTTPException(status_code=404, detail="Short-term memory not found")
+            
+        # Parse existing memory
+        try:
+            memory = json.loads(stm_file.content.decode('utf-8'))
+        except json.JSONDecodeError as e:
+            log_error(f"Invalid short-term memory format: {str(e)}", e, {"userId": user.userId}, "/active")
+            raise HTTPException(status_code=500, detail="Invalid short-term memory format")
+            
+        # Initialize active list if it doesn't exist
+        if 'active' not in memory:
+            memory['active'] = []
+            
+        # Create new active item
+        new_item = {
+            'device': device,
+            'path': path,
+            'title': title,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+        # Update existing item or add new one
+        updated = False
+        for i, item in enumerate(memory['active']):
+            if item.get('device') == device:
+                memory['active'][i] = new_item
+                updated = True
+                break
+                
+        if not updated:
+            memory['active'].append(new_item)
+            
+        # Update the file in database
+        stm_file.content = json.dumps(memory).encode('utf-8')
+        stm_file.size = len(stm_file.content)
+        db.commit()
+        
+        # Log success
+        logger.info(f"[SERVER] Updated active item for user {user.userId}, device {device}")
+        
+        # Return success response with updated active items
+        response = {
+            "status": "success",
+            "active": memory['active']
+        }
+        log_response(200, response, '/active')
         return JSONResponse(response, status_code=200)
-    except json.JSONDecodeError as json_err:
-        return JSONResponse({"error": f"Invalid JSON in request body: {str(json_err)}"}, status_code=400)
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        # Log errors
-        log_error(str(e), e, {"endpoint": "/active_url"}, "/active_url")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        log_error(str(e), e, {"endpoint": "/active"}, "/active")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @router.get("/files")
 def list_files(user: User = Depends(get_current_user), db: SessionLocal = Depends(get_db)):
@@ -744,165 +820,6 @@ def download_file(fileId: int, user: User = Depends(get_current_user), db: Sessi
         log_error(f"Error downloading file: {str(e)}", exc=e, endpoint=f"/download/{fileId}")
         raise HTTPException(status_code=500, detail=f"Error downloading file: {str(e)}")
 
-@router.post("/files/{fileId}/versions")
-async def upload_file_version(fileId: int, file: FastAPIFile = File(...), user: User = Depends(get_current_user), db: SessionLocal = Depends(get_db)):
-    """Upload a new version of an existing file.
-    
-    Creates a new version of the file while preserving the original.
-    Only the owner of the file can add new versions.
-    
-    Args:
-        fileId: ID of the file to create a version for
-        file: The new version of the file
-        user: The authenticated user making the request
-        db: Database session dependency
-        
-    Returns:
-        dict: Information about the newly created version
-        
-    Raises:
-        HTTPException: 404 if file not found
-        HTTPException: 403 if user doesn't own the file
-        HTTPException: 400 if file is too large
-    """
-    try:
-        # Check if file exists and belongs to the user
-        original_file = db.query(DBFile).filter(DBFile.fileId == fileId).first()
-        if not original_file:
-            raise HTTPException(status_code=404, detail="File not found")
-            
-        if original_file.userId != user.userId:
-            raise HTTPException(status_code=403, detail="You don't have permission to modify this file")
-        
-        # Read file contents
-        contents = await file.read()
-        
-        # Check file size
-        file_size = len(contents)
-        if file_size > user.max_file_size:
-            raise HTTPException(status_code=400, detail="File too large")
-        
-        # Get the latest version number
-        latest_version = db.query(FileVersion).filter(
-            FileVersion.fileId == fileId
-        ).order_by(FileVersion.version_number.desc()).first()
-        
-        new_version_number = 1
-        if latest_version:
-            new_version_number = latest_version.version_number + 1
-        
-        # Create new version
-        new_version = FileVersion(
-            fileId=fileId,
-            userId=user.userId,
-            content=contents,
-            size=file_size,
-            version_number=new_version_number
-        )
-        
-        db.add(new_version)
-        db.commit()
-        db.refresh(new_version)
-        
-        # Update the main file record with the latest content
-        original_file.content = contents
-        original_file.size = file_size
-        db.commit()
-        
-        return {
-            "fileId": fileId,
-            "filename": original_file.filename,
-            "version": new_version_number,
-            "size": file_size,
-            "created_at": new_version.created_at
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        log_error(f"Error uploading file version: {str(e)}", exc=e, endpoint=f"/files/{fileId}/versions")
-        raise HTTPException(status_code=500, detail=f"Error uploading file version: {str(e)}")
-
-# Create a Pydantic model for metadata validation
-class MetadataUpdate(BaseModel):
-    metadata: Dict[str, str]
-    
-@router.post("/files/{fileId}/metadata")
-def set_file_metadata(fileId: int, update: MetadataUpdate, user: User = Depends(get_current_user), db: SessionLocal = Depends(get_db)):
-    """Set or update metadata for a file.
-    
-    Adds or updates metadata key-value pairs for a file.
-    Only the owner of the file can modify metadata.
-    
-    Args:
-        fileId: ID of the file to set metadata for
-        metadata: Dictionary of metadata key-value pairs
-        user: The authenticated user making the request
-        db: Database session dependency
-        
-    Returns:
-        dict: Updated metadata for the file
-        
-    Raises:
-        HTTPException: 404 if file not found
-        HTTPException: 403 if user doesn't own the file
-    """
-    try:
-        # Check if file exists and belongs to the user
-        file_record = db.query(DBFile).filter(DBFile.fileId == fileId).first()
-        if not file_record:
-            raise HTTPException(status_code=404, detail="File not found")
-            
-        if file_record.userId != user.userId:
-            raise HTTPException(status_code=403, detail="You don't have permission to modify this file's metadata")
-        
-        # Add or update metadata entries
-        updated_keys = []
-        for key, value in update.metadata.items():
-            # Skip invalid keys
-            if not key or not isinstance(key, str):
-                continue
-                
-            # Look for existing metadata with this key
-            existing = db.query(FileMetadata).filter(
-                FileMetadata.fileId == fileId,
-                FileMetadata.key == key
-            ).first()
-            
-            if existing:
-                # Update existing metadata
-                existing.value = str(value)
-                updated_keys.append(key)
-            else:
-                # Create new metadata entry
-                new_metadata = FileMetadata(
-                    fileId=fileId,
-                    key=key,
-                    value=str(value)
-                )
-                db.add(new_metadata)
-                updated_keys.append(key)
-        
-        db.commit()
-        
-        # Get all metadata for this file
-        all_metadata = {}
-        metadata_records = db.query(FileMetadata).filter(FileMetadata.fileId == fileId).all()
-        for record in metadata_records:
-            all_metadata[record.key] = record.value
-        
-        return {
-            "fileId": fileId,
-            "metadata": all_metadata,
-            "updated_keys": updated_keys
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        log_error(f"Error updating file metadata: {str(e)}", exc=e, endpoint=f"/files/{fileId}/metadata")
-        raise HTTPException(status_code=500, detail=f"Error updating file metadata: {str(e)}")
-
 @router.delete("/delete/{fileId}")
 def delete_file(fileId: int, user: User = Depends(get_current_user), db: SessionLocal = Depends(get_db)):
     """Delete a specific file by its ID.
@@ -1005,6 +922,7 @@ async def handle_twilio_incoming_message(request: Request, From: str = Form(...)
         return Response(content=twiml_response, media_type="application/xml", status_code=200)
 
     phone_number_to_lookup = None
+
     try:
         phone_number_to_lookup = int(normalized_from_number_str)
         found_user = db.query(User).filter(User.phone_number == phone_number_to_lookup).first()
@@ -1017,15 +935,6 @@ async def handle_twilio_incoming_message(request: Request, From: str = Form(...)
         logger.error(f"[{endpoint_name}] Error during direct DB lookup for phone number {normalized_from_number_str}: {e}")
         found_user = None # Ensure found_user is None on other DB errors
 
-    # Only attempt LTM fallback if direct DB lookup failed AND phone_number_to_lookup was valid (i.e. parseable)
-    # This avoids LTM lookup for malformed 'From' numbers.
-    if not found_user and phone_number_to_lookup is not None: 
-        logger.info(f"[{endpoint_name}] User not found via direct DB lookup for {normalized_from_number_str}. LTM fallback for phone numbers is disabled if User.phone_number is primary identifier.")
-        # The LTM fallback for matching based on a phone number in the LTM JSON is problematic 
-        # if User.phone_number is the canonical source. We'll skip it to avoid false positives.
-        # If a user was found by phone_number in DB, found_user would be set. 
-        # If not, and the number is unknown, it should remain unknown.
-        pass # Explicitly doing nothing here for LTM phone fallback
 
     # If still no user after direct DB lookup (LTM phone lookup is now skipped)
     # The original LTM logic for users without any phone_number in DB might still be relevant
