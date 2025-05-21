@@ -10,74 +10,36 @@ This module defines all the API endpoints for the LMS platform, including:
 
 import os
 import json
+import logging
+import re
+import uuid
+import atexit
 from datetime import datetime
+from typing import Dict, List, Optional
+from urllib.parse import unquote, quote
+
 from fastapi import APIRouter, Depends, HTTPException, UploadFile as FastAPIFile, File, Request, Header, Form, Body
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel
-from typing import Dict, List, Optional
 from fastapi.responses import StreamingResponse, JSONResponse, Response, FileResponse
+from pydantic import BaseModel
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+
 from .db import User, File as DBFile, Query, Session, SessionLocal
 from .schemas import RegisterRequest, UserResponse
 from .auth import (
     get_db, get_password_hash, authenticate_user, create_access_token,
     get_current_user, ACCESS_TOKEN_EXPIRE_MINUTES
 )
-from urllib.parse import unquote, quote
-from typing import List
-from fastapi.security import OAuth2PasswordRequestForm
-from fastapi import Body, Request
-import logging
-import re
-import uuid
-
 from aiagent.handler import query as ai_query_handler
 from aiagent.memory.memory_manager import LongTermMemoryManager, ShortTermMemoryManager
 from aiagent.context.reference import read_references
-from .auth import get_db
 
-router = APIRouter()
-
-# Global variable to store the status message
-status_message = "Thoth API is starting up..."
-
-# Function to update the status message
-def update_status():
-    global status_message
-    try:
-        with SessionLocal() as db:
-            user_count = db.query(User).count()
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            status_message = f"Thoth API is running (as of {current_time}). Total users: {user_count}"
-            logger.info(f"Status updated: {status_message}")
-    except Exception as e:
-        logger.error(f"Error updating status: {e}")
-
-# Initialize the scheduler
-scheduler = BackgroundScheduler()
-scheduler.add_job(
-    update_status,
-    trigger=IntervalTrigger(minutes=1),
-    id='update_status_job',
-    name='Update status every minute',
-    replace_existing=True
-)
-
-# Start the scheduler when the module loads
-scheduler.start()
-logger.info("Scheduler started for status updates")
-
-# Ensure the scheduler shuts down when the app shuts down
-import atexit
-atexit.register(lambda: scheduler.shutdown())
-
-# Set up logger
+# Set up logger first
 logger = logging.getLogger("lms.server")
 logger.setLevel(logging.INFO)
 
-# --- Logging configuration: print to console and log to file (if possible) ---
-
+# Configure logging formatter
 formatter = logging.Formatter('[%(asctime)s] %(levelname)s %(name)s: %(message)s')
 
 # Always log to console (stdout), which Vercel captures
@@ -98,7 +60,53 @@ if not os.environ.get("VERCEL"):
         logger.warning(f"[Logging] Could not set up file logging: {e}")
 else:
     logger.warning("[Logging] File logging is disabled (running on Vercel or read-only filesystem)")
-# --- End logging configuration ---
+
+# Initialize router
+router = APIRouter()
+
+# Global variable to store the status message
+status_message = "Thoth API is starting up..."
+
+# Function to update the status message
+def update_status():
+    global status_message
+    try:
+        with SessionLocal() as db:
+            user_count = db.query(User).count()
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            status_message = f"Thoth API is running (as of {current_time}). Total users: {user_count}"
+            logger.info(f"Status updated: {status_message}")
+    except Exception as e:
+        logger.error(f"Error updating status: {e}")
+
+# Initialize the scheduler
+scheduler = None
+
+def start_scheduler():
+    global scheduler
+    if scheduler is None:
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(
+            update_status,
+            trigger=IntervalTrigger(minutes=1),
+            id='update_status_job',
+            name='Update status every minute',
+            replace_existing=True
+        )
+        scheduler.start()
+        logger.info("Scheduler started for status updates")
+        atexit.register(lambda: scheduler.shutdown() if scheduler else None)
+
+# Start the scheduler when the module loads
+start_scheduler()
+
+# Set ASSETS_FOLDER to /tmp/assets if on Vercel or read-only FS, else use 'assets'
+if os.environ.get("VERCEL") or os.environ.get("READ_ONLY_FS"):
+    ASSETS_FOLDER = "/tmp/assets"
+    logger.warning("[Assets] Using /tmp/assets due to read-only filesystem or Vercel environment.")
+else:
+    ASSETS_FOLDER = "assets"
+os.makedirs(ASSETS_FOLDER, exist_ok=True)
 
 # Logging helpers (stubs for demonstration)
 def log_request_start(endpoint, method, headers, client_host):
