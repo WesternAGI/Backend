@@ -227,10 +227,19 @@ def register(req: RegisterRequest, db: SessionLocal = Depends(get_db)):
         "userProfile_language": "English",
         "userProfile_age": "25",
         "userProfile_gender": "male",
-        "userProfile_country"
-        "values": {"age": "25", "gender": "male", "country": "Canada", "city": "London"},
-        "beliefs": ["patient", "caring", "helpful", "knowledgeable", "friendly"],
-        "phone_number": new_user.phone_number  # Use phone_number from persisted user object
+        "userProfile_country": "Canada",
+        "userProfile_city": "London",
+        "userProfile_address": "Unknown",
+        "userProfile_postal_code": "Unknown",
+        "userProfile_email": "Unknown",
+        "userProfile_phone_number": new_user.phone_number, 
+        "userProfile_occupation": "Unknown",
+        "userProfile_marital_status": "Unknown",
+        "userProfile_children": "Unknown",
+        "userProfile_income": "Unknown",
+        "userProfile_education": "Unknown",
+        "userProfile_employment": "Unknown",
+
     }
     
     # Save memory files to the database
