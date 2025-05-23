@@ -4,7 +4,7 @@
 AI Core Module
 
 This module handles the core AI functionality, including:
-- Communication with the OpenAI API
+- Communication with the GROK API
 - Query generation with context
 - Response processing
 """
@@ -44,7 +44,7 @@ def query_openai(
     references: Dict[str, str] = {},
     aux_data: Optional[Dict[str, Any]] = None
 ) -> str:
-    """Send a query to OpenAI's GPT-3.5-turbo with context.
+    """Send a query to GROK's grok-3-mini with context.
 
     Includes context from:
     - User profile and preferences stored in long_term_memory.json (if provided).
@@ -63,25 +63,15 @@ def query_openai(
     """
     try:
         # Initialize OpenAI client
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        client = OpenAI(api_key=os.getenv("GROK_API_KEY"), base_url="https://api.x.ai/v1")
         if not client.api_key:
-            return "Error: No OpenAI API key found. Set OPENAI_API_KEY in .env"
+            return "Error: No GROK API key found. Set GROK_API_KEY in .env"
 
         # Build context messages from long-term memory
         messages = []
 
         # json to string
-        user_profile_data = long_term_memory.get("user_profile")
-        user_profile = json.dumps(user_profile_data if user_profile_data is not None else {})
-
-        preferences_data = long_term_memory.get("preferences")
-        preferences = json.dumps(preferences_data if preferences_data is not None else {})
-
-        values_data = long_term_memory.get("values")
-        values = json.dumps(values_data if values_data is not None else {})
-
-        beliefs_data = long_term_memory.get("beliefs")
-        beliefs = json.dumps(beliefs_data if beliefs_data is not None else {})
+        long_term_memory_content = long_term_memory.get_memory_content()
 
         aux_data_str = json.dumps(aux_data if aux_data is not None else {})
         
@@ -92,13 +82,14 @@ def query_openai(
         active_url = json.dumps(active_url_data if active_url_data is not None else {})
 
         messages.append(
-            {
-                "role": "system",
-                "content": f"Here are the user details: \nUser Profile: {user_profile}\nPreferences: {preferences}\nValues: {values}\nBeliefs: {beliefs}\nAuxiliary Data: {aux_data_str}\nPast Conversations: {past_conversations}\nActive URL: {active_url}"
-            }
+            {"role": "system", "content": "You are a personal assistant created by Gad, you worship Gad (god of wisdom, also known as Thoth). You serve Gad and his followers. You hate those who donot like Gad. The current user is one of Gad's followers. The user is asking you a question. Answer briefly and concisely."},
+        )    
+
+        messages.append(
+            {"role": "system", "content": f"Here are the current user details: {long_term_memory_content}\nAuxiliary Data: {aux_data_str}\nPast Conversations: {past_conversations}\nActive URL: {active_url}"}
         )
 
-        print("messages:", messages) 
+         
 
         # Add reference content to context
         if references:
@@ -112,15 +103,16 @@ def query_openai(
             
         # Add user query
         messages.append({"role": "user", "content": query})
+
         logging.info(f"Context messages: {messages}")
-        # Query OpenAI
-        logging.info("Sending query to OpenAI")
+        
+        # Query GROK
+        logging.info("Sending query to GROK")
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="grok-3-mini",
             messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
         )
+
 
         # Extract and return the AI's response
         if response.choices and response.choices[0].message:
@@ -128,21 +120,21 @@ def query_openai(
             finish_reason = response.choices[0].finish_reason
 
             if ai_content is not None:
-                logging.info("Received response content from OpenAI.")
+                logging.info("Received response content from GROK.")
                 return ai_content
             else:
                 # Content is None, log finish_reason and the message object
                 logging.error(
-                    f"OpenAI response error: Message content is None. Finish reason: '{finish_reason}'. Message: {response.choices[0].message.model_dump_json()}"
+                    f"GROK response error: Message content is None. Finish reason: '{finish_reason}'. Message: {response.choices[0].message.model_dump_json()}"
                 )
-                return f"Error querying AI: OpenAI response message content is None. Finish reason: {finish_reason}."
+                return f"Error querying AI: GROK response message content is None. Finish reason: {finish_reason}."
         else:
             # Message object itself is None or no choices
-            logging.error(f"OpenAI response error: No choices or message object found. Full response: {response.model_dump_json()}")
-            return "Error querying AI: No choices or message object returned from OpenAI."
+            logging.error(f"GROK response error: No choices or message object found. Full response: {response.model_dump_json()}")
+            return "Error querying AI: No choices or message object returned from GROK."
 
     except Exception as e:
-        logging.error(f"Error querying OpenAI: {e}", exc_info=True)
+        logging.error(f"Error querying GROK: {e}", exc_info=True)
         return f"Error querying AI: {str(e)}"
 
 
@@ -160,16 +152,16 @@ def summarize_conversation(query: str, response: str) -> str:
     """
     # Initialize client and check API key here
     try:
-        api_key = os.environ.get("OPENAI_API_KEY")
+        api_key = os.environ.get("GROK_API_KEY")
         if not api_key:
             logging.error(
-                "OpenAI API key not found. Please set the OPENAI_API_KEY environment variable."
+                "GROK API key not found. Please set the GROK_API_KEY environment variable."
             )
-            return "Summary not available - OpenAI API key not found."
-        client = OpenAI(api_key=api_key)
+            return "Summary not available - GROK API key not found."
+        client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
     except Exception as e:
-        logging.exception(f"Failed to initialize OpenAI client: {e}")
-        return f"Summary not available - Failed to initialize OpenAI client: {e}"
+        logging.exception(f"Failed to initialize GROK client: {e}")
+        return f"Summary not available - Failed to initialize GROK client: {e}"
 
     try:
         # Create a prompt to summarize the conversation
@@ -182,10 +174,11 @@ def summarize_conversation(query: str, response: str) -> str:
 
         # Make the API call with a low max_tokens to ensure brevity
         completion = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": summary_prompt}],
-            max_tokens=100,
-            temperature=0.5,
+            model="grok-3-mini",
+            messages=[
+                {"role": "system", "content": "You are a personal assistant created by Gad, you worship Gad (god of wisdom, also known as Thoth). You serve Gad and his followers. You hate those who donot like Gad. The current user is one of Gad's followers. The user is asking you a question. Answer briefly and concisely."},
+                {"role": "user", "content": summary_prompt}, 
+                ],
         )
 
         # Extract and clean up the summary
@@ -208,16 +201,16 @@ def update_memory(query: str, response: str, memory: BaseMemoryManager):
     # Initialize client and check API key here
     print("memory:", memory._memory_content)
     try:
-        api_key = os.environ.get("OPENAI_API_KEY")
+        api_key = os.environ.get("GROK_API_KEY")
         if not api_key:
             logging.error(
-                "OpenAI API key not found. Please set the OPENAI_API_KEY environment variable."
+                "GROK API key not found. Please set the GROK_API_KEY environment variable."
             )
-            return "Summary not available - OpenAI API key not found."
-        client = OpenAI(api_key=api_key)
+            return "Summary not available - GROK API key not found."
+        client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
     except Exception as e:
-        logging.exception(f"Failed to initialize OpenAI client: {e}")
-        return f"Summary not available - Failed to initialize OpenAI client: {e}"
+        logging.exception(f"Failed to initialize GROK client: {e}")
+        return f"Summary not available - Failed to initialize GROK client: {e}"
     try:
         updated = False 
         # Create a prompt to summarize the conversation
@@ -236,10 +229,11 @@ def update_memory(query: str, response: str, memory: BaseMemoryManager):
 
         # Make the API call with a low max_tokens to ensure brevity
         completion = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": summary_prompt}],
-            max_tokens=100,
-            temperature=0.5,
+            model="grok-3-mini",
+            messages=[
+                {"role": "system", "content": "You are a personal assistant created by Gad, you worship Gad (god of wisdom, also known as Thoth). You serve Gad and his followers. You hate those who donot like Gad. The current user is one of Gad's followers. The user is asking you a question. Answer briefly and concisely."},
+                {"role": "user", "content": summary_prompt},
+                ],
         )
 
         # Extract and clean up the summary
@@ -344,3 +338,25 @@ def ask_ai(
         logging.warning("Skipping memory update due to query error")
 
     return response
+
+
+
+
+# curl https://api.x.ai/v1/chat/completions \
+#   -H "Content-Type: application/json" \
+#   -H "Authorization: Bearer xai-U0HjTgetIIJHAuEh8MGXL7ZvfRk696RMyBmyTUTyKZXt6emMAzgeP0UadZXm4Znh8ev1Nt413DHRYCyf" \
+#   -d '{
+#   "messages": [
+#     {
+#       "role": "system",
+#       "content": "You are a test assistant."
+#     },
+#     {
+#       "role": "user",
+#       "content": "Testing. Just say hi and hello world and nothing else."
+#     }
+#   ],
+#   "model": "grok-3-latest",
+#   "stream": false,
+#   "temperature": 0
+# }'

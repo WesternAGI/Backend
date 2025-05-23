@@ -27,8 +27,6 @@ class BaseMemoryManager:
     def set(self, key: str, value: Any) -> None:
         """Set a specific field in memory."""
         self._memory_content[key] = value
-        print("get value:", self.get(key))
-        print("get memory content:", self._memory_content)
 
     def get(self, key: str) -> Optional[Any]:
         """Get a specific field from memory."""
@@ -42,7 +40,8 @@ class ShortTermMemoryManager(BaseMemoryManager):
     and focuses on the immediate context of user interactions.
     
     Attributes:
-        memory_file (str): Path to the short-term memory storage file
+        memory_content (Dict): The content of the short-term memory.
+
     """
     
     def __init__(self, memory_content: Optional[Dict] = None):
@@ -75,9 +74,17 @@ class ShortTermMemoryManager(BaseMemoryManager):
 class LongTermMemoryManager(BaseMemoryManager):
     def get_content(self) -> Dict:
         """Get the entire memory content."""
-        if not self._memory_content and self.memory_file and os.path.exists(self.memory_file):
+        if not self._memory_content :
             self._memory_content = self.load()
         return self._memory_content
+        
+    def get_memory_content(self) -> Dict:
+        """Alias for get_content to maintain backward compatibility.
+        
+        Returns:
+            Dict: The entire memory content
+        """
+        return self.get_content()
     """Manages long-term memory operations.
     
     Long-term memory stores persistent user preferences, profile information,
@@ -85,7 +92,8 @@ class LongTermMemoryManager(BaseMemoryManager):
     multiple sessions. This memory provides continuity in the user experience.
     
     Attributes:
-        memory_file (str): Path to the long-term memory storage file
+        memory_content (Dict): The content of the long-term memory.
+        
     """
     
     def __init__(self, memory_content: Optional[Dict] = None):

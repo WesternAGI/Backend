@@ -941,50 +941,10 @@ async def handle_twilio_incoming_message(request: Request, From: str = Form(...)
         found_user = None # Ensure found_user is None on other DB errors
 
 
-    # If still no user after direct DB lookup (LTM phone lookup is now skipped)
-    # The original LTM logic for users without any phone_number in DB might still be relevant
-    # for OTHER (non-phone based) identification if that was ever a feature, but for phone-based lookup, DB is king.
-    if not found_user:
-        # Fallback to checking LTM for users who DO NOT have a phone_number set in the database.
-        # This is to maintain compatibility for any users who might have been identified via LTM content previously
-        # AND do not have a phone_number in their User record.
-        logger.info(f"[{endpoint_name}] User not found by direct phone DB lookup. Checking LTM for users with NO DB phone_number.")
-        users_for_ltm_fallback = db.query(User).filter(User.phone_number.is_(None)).all()
-        
-        for user_record in users_for_ltm_fallback:
-            # IMPORTANT: This LTM check should NOT try to match by phone_number again here.
-            # It should only match if the LTM content itself identifies the user through some other means
-            # if that was an intended feature. For now, we assume if phone didn't match DB, and LTM is for non-phone users,
-            # it won't find this specific caller unless the LTM had a *different* identifier for them.
-            # To prevent false positives from the previous broad LTM check, we will *not* re-check ltm_phone_number here.
-            # The goal is if direct DB phone lookup fails, and it's an unknown number, it should be treated as such.
-            # This loop is more for users without phone numbers at all in the DB.
-
-            # Original LTM loading logic (if needed for other identification methods in LTM for users without DB phone numbers):
-            longterm_file = db.query(DBFile).filter(
-                DBFile.userId == user_record.userId,
-                DBFile.filename == "long_term_memory.json"
-            ).first()
-
-            if longterm_file:
-                try:
-                    ltm_content = json.loads(longterm_file.content.decode('utf-8'))
-                    # If there was some OTHER field in LTM to identify a user (not phone_number)
-                    # that logic would go here. For this specific issue, we are focusing on phone_number lookups.
-                    # Example: if ltm_content.get('some_other_id') == expected_other_id:
-                    #    found_user = user_record
-                    #    logger.info(f"[{endpoint_name}] Matched LTM (non-phone criteria) to user {user_record.username}")
-                    #    break 
-                except json.JSONDecodeError:
-                    logger.error(f"[{endpoint_name}] Could not decode LTM JSON for user {user_record.userId}.")
-                except Exception as e:
-                    logger.error(f"[{endpoint_name}] Error processing LTM for user {user_record.userId}: {e}")
-            if found_user: # if LTM (non-phone) check found a user
-                break
 
     if not found_user:
         logger.warning(f"[{endpoint_name}] No user found for Twilio number {normalized_from_number_str} ({From}) after all lookups. Sending 'not recognized' message.")
-        twiml_response = "<Response><Message>Sorry, your phone number is not recognized in our system.</Message></Response>"
+        twiml_response = "<Response><Message>Sorry, you are not recognized by Gad.</Message></Response>"
         log_response(200, twiml_response, endpoint_name)
         return Response(content=twiml_response, media_type="application/xml", status_code=200)
 
@@ -1023,7 +983,7 @@ async def handle_twilio_incoming_message(request: Request, From: str = Form(...)
             "user_id": user.userId,
             "chat_id": chat_id,
             "query_id": db_query.queryId,
-            "client_info": {"model": "gpt-3.5-turbo", "max_tokens": 1024, "temperature": 0.7} # Default params
+            
         }
         
         # references = read_references()
