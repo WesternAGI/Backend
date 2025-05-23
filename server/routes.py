@@ -983,7 +983,10 @@ async def handle_twilio_incoming_message(request: Request, From: str = Form(...)
             "user_id": user.userId,
             "chat_id": chat_id,
             "query_id": db_query.queryId,
-            
+            "client_info": {
+                "max_tokens": 1024,
+                "temperature": 0.7
+            }
         }
         
         # references = read_references()
