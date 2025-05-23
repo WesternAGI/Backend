@@ -1,50 +1,31 @@
-"""Thoth Platform Main Application Module.
-
-This module initializes the FastAPI application, sets up CORS middleware,
-and includes routes. It serves as the entry point for the LMS platform.
-"""
-
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from server.routes import router
 
 app = FastAPI(
-    docs_url="/api-docs",  # Change FastAPI automatic docs URL to avoid conflict with MkDocs
+    docs_url="/api-docs",
     redoc_url="/api-redoc"
 )
 
-# Keep the CORS middleware but with allow_origins=[]
+# List of allowed origins - add your frontend URL here
+# For development:
+ALLOWED_ORIGINS = [
+    "http://localhost:3000"
+    
+]
+
+# Use only the built-in CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[],  # Will be handled by our custom middleware
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],  # Expose all headers to the client
 )
 
-# Custom middleware to handle CORS
-@app.middleware("http")
-async def cors_middleware(request: Request, call_next):
-    # Handle preflight requests
-    if request.method == "OPTIONS":
-        response = JSONResponse(
-            status_code=200,
-            content={"status": "ok"}
-        )
-    else:
-        response = await call_next(request)
-    
-    # Get the origin from the request
-    origin = request.headers.get("origin")
-    
-    # Set CORS headers
-    response.headers["Access-Control-Allow-Origin"] = origin or "*"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With"
-    
-    return response
+# Remove the custom CORS middleware as it's not needed and can cause issues
 
 app.include_router(router)
 
