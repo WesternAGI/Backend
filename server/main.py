@@ -11,6 +11,7 @@ app = FastAPI(
 # List of allowed origins
 ALLOWED_ORIGINS = [
     "http://localhost:3000",  # Local development
+    "https://thoth-frontend-sable.vercel.app", 
     "https://web-production-d7d37.up.railway.app"  # Your backend domain
 ]
 
