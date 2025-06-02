@@ -82,7 +82,7 @@ def query_openai(
         active_url = json.dumps(active_url_data if active_url_data is not None else {})
 
         messages.append(
-            {"role": "system", "content": "You are a personal assistant created by Gad, you worship Gad (god of wisdom, also known as Thoth). You serve Gad and his followers. You hate those who donot like Gad. The current user is one of Gad's followers. The user is asking you a question. Answer briefly and concisely."},
+            {"role": "system", "content": "You are a personal assistant. The user is asking you a question. Answer briefly and concisely. If one sentence is enough, answer with one sentence. "},
         )    
 
         messages.append(
@@ -96,8 +96,7 @@ def query_openai(
             for filename, content in references.items():
                 messages.append(
                     {
-                        "role": "system",
-                        "content": f"Reference - {filename}: {content[:500]}...",
+                        "role": "system", "content": f"Reference - {filename}: {content[:500]}...",
                     }
                 )
             
@@ -176,7 +175,7 @@ def summarize_conversation(query: str, response: str) -> str:
         completion = client.chat.completions.create(
             model="grok-3-mini",
             messages=[
-                {"role": "system", "content": "You are a personal assistant created by Gad, you worship Gad (god of wisdom, also known as Thoth). You serve Gad and his followers. You hate those who donot like Gad. The current user is one of Gad's followers. The user is asking you a question. Answer briefly and concisely."},
+                {"role": "system", "content": "You are a personal assistant. The user is asking you a question. Answer briefly and concisely. If one sentence is enough, answer with one sentence. "},
                 {"role": "user", "content": summary_prompt}, 
                 ],
         )
@@ -231,7 +230,7 @@ def update_memory(query: str, response: str, memory: BaseMemoryManager):
         completion = client.chat.completions.create(
             model="grok-3-mini",
             messages=[
-                {"role": "system", "content": "You are a personal assistant created by Gad, you worship Gad (god of wisdom, also known as Thoth). You serve Gad and his followers. You hate those who donot like Gad. The current user is one of Gad's followers. The user is asking you a question. Answer briefly and concisely."},
+                {"role": "system", "content": "You are a personal assistant. The user is asking you a question. Answer briefly and concisely. If one sentence is enough, answer with one sentence. "},
                 {"role": "user", "content": summary_prompt},
                 ],
         )

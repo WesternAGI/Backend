@@ -1013,6 +1013,11 @@ async def handle_twilio_incoming_message(request: Request, From: str = Form(...)
             shortterm_content["conversations"] = current_conversations + [{
                 "query": user_query_text, "response": ai_response, "summary": summary
             }]
+
+            # limit conversations to 20
+            if len(shortterm_content["conversations"]) > 20:
+                shortterm_content["conversations"] = shortterm_content["conversations"][-20:]
+            
             
             if shortterm_file_db:
                 shortterm_file_db.content = json.dumps(shortterm_content).encode('utf-8')
@@ -1053,6 +1058,113 @@ async def handle_twilio_message_status(request: Request, MessageSid: str = Form(
     return Response(status_code=200)
 
 
+
+@router.post("/api/webhooks/twilio/incoming-call")
+async def handle_twilio_incoming_call(
+    request: Request,
+    From: str = Form(...),
+    Digits: str = Form(None),
+    db: Session = Depends(get_db)
+):
+    endpoint_name = "/api/webhooks/twilio/incoming-call"
+    logger.info(f"[{endpoint_name}] Incoming call from {From}, Digits: {Digits}")
+
+    normalized_from = re.sub(r"\D", "", From)
+    user = db.query(User).filter(User.phone_number == int(normalized_from)).first() if normalized_from.isdigit() else None
+
+    if not user:
+        twiml = """
+        <Response>
+            <Say voice="alice">Sorry, you are not recognized by Gad.</Say>
+            <Hangup/>
+        </Response>
+        """
+        return Response(content=twiml.strip(), media_type="application/xml", status_code=200)
+
+    if Digits:
+        # If the user pressed a key, respond with the digit
+        twiml = f"""
+        <Response>
+            <Say voice="alice">You pressed {Digits}.</Say>
+            <Hangup/>
+        </Response>
+        """
+        return Response(content=twiml.strip(), media_type="application/xml", status_code=200)
+
+    # No digits yet → start AI prompt
+    user_query_text = "User initiated a voice call. How can I assist?"
+    chat_id = f"voice_{normalized_from}"
+
+    # AI interaction and DB logging
+    try:
+        db_query = Query(userId=user.userId, chatId=chat_id, query_text=user_query_text)
+        db.add(db_query)
+        db.commit()
+        db.refresh(db_query)
+
+        shortterm = db.query(DBFile).filter(DBFile.userId == user.userId, DBFile.filename == "short_term_memory.json").first()
+        longterm = db.query(DBFile).filter(DBFile.userId == user.userId, DBFile.filename == "long_term_memory.json").first()
+
+        short_content = json.loads(shortterm.content.decode('utf-8')) if shortterm and shortterm.content else {}
+        long_content = json.loads(longterm.content.decode('utf-8')) if longterm and longterm.content else {}
+
+        short_term_memory = ShortTermMemoryManager(memory_content=short_content)
+        long_term_memory = LongTermMemoryManager(memory_content=long_content)
+
+        aux_data = {
+            "username": user.username,
+            "user_id": user.userId,
+            "chat_id": chat_id,
+            "query_id": db_query.queryId,
+            "client_info": {"max_tokens": 256, "temperature": 0.5}
+        }
+
+        ai_response = ai_query_handler.query_openai(
+            query=user_query_text,
+            long_term_memory=long_term_memory,
+            short_term_memory=short_term_memory,
+            aux_data=aux_data,
+            max_tokens=256,
+            temperature=0.5,
+        )
+
+        db_query.response = ai_response
+        db.commit()
+
+        # Optionally update memory (skip if not needed in voice)
+        summary = ai_query_handler.summarize_conversation(user_query_text, ai_response)
+        short_content.setdefault("conversations", []).append({
+            "query": user_query_text, "response": ai_response, "summary": summary
+        })
+        if shortterm:
+            shortterm.content = json.dumps(short_content).encode('utf-8')
+            shortterm.size = len(shortterm.content)
+        db.commit()
+
+        # Respond with AI and allow digit input
+        twiml = f"""
+        <Response>
+            <Say voice="alice">{ai_response}</Say>
+            <Pause length="1" />
+            <Gather action="/api/webhooks/twilio/incoming-call" numDigits="1" timeout="5">
+                <Say voice="alice">Please press any number from one to nine.</Say>
+            </Gather>
+        </Response>
+        """
+        return Response(content=twiml.strip(), media_type="application/xml", status_code=200)
+
+    except Exception as e:
+        logger.error(f"[{endpoint_name}] Error during AI query: {e}", exc_info=True)
+        db.rollback()
+        twiml_error = """
+        <Response>
+            <Say voice="alice">An error occurred while processing your call. Please try again later.</Say>
+            <Hangup/>
+        </Response>
+        """
+        return Response(content=twiml_error.strip(), media_type="application/xml", status_code=500)
+
+        
 
 def send_twilio_message(to_phone_number: str, message: str):
     try:
