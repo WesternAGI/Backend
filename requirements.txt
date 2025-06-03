@@ -1,5 +1,5 @@
-sphinx
-sphinx-rtd-theme
+# sphinx
+# sphinx-rtd-theme
 fastapi
 uvicorn[standard]
 SQLAlchemy
@@ -16,6 +16,6 @@ psutil
 Flask
 apscheduler
 twilio
-openai-whisper
-torch
+# openai-whisper
+# torch
 loguru
