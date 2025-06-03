@@ -36,6 +36,43 @@ from .auth import (
 from aiagent.handler import query as ai_query_handler
 from aiagent.memory.memory_manager import LongTermMemoryManager, ShortTermMemoryManager
 from aiagent.context.reference import read_references
+from aiagent.tools.voice import Whisper, download_audio
+
+whisper_transcriber = Whisper(model_size='tiny')  # Load once at the top
+
+
+def transcribe_audio(audio_url: str) -> str:
+    """Transcribe audio from a URL using the Whisper model.
+    
+    Args:
+        audio_url: URL of the audio file to transcribe
+        
+    Returns:
+        str: The transcribed text
+        
+    Raises:
+        Exception: If transcription fails
+    """
+    logger.info(f"Transcribing audio from URL: {audio_url}")
+    try:
+        # Download the audio file
+        audio_path = download_audio(audio_url)
+        
+        # Transcribe the audio
+        text, language = whisper_transcriber.transcribe(audio_path)
+        logger.info(f"Transcription completed. Detected language: {language}")
+        
+        # Clean up the downloaded file
+        try:
+            os.remove(audio_path)
+        except Exception as e:
+            logger.warning(f"Failed to delete temporary audio file {audio_path}: {str(e)}")
+            
+        return text
+        
+    except Exception as e:
+        logger.error(f"Error in transcribe_audio: {str(e)}")
+        raise Exception(f"Failed to transcribe audio: {str(e)}")
 
 # Set up logger first
 logger = logging.getLogger("lms.server")
@@ -1058,16 +1095,15 @@ async def handle_twilio_message_status(request: Request, MessageSid: str = Form(
     return Response(status_code=200)
 
 
-
 @router.post("/api/webhooks/twilio/incoming-call")
 async def handle_twilio_incoming_call(
     request: Request,
     From: str = Form(...),
-    Digits: str = Form(None),
+    RecordingUrl: str = Form(None),
     db: Session = Depends(get_db)
 ):
     endpoint_name = "/api/webhooks/twilio/incoming-call"
-    logger.info(f"[{endpoint_name}] Incoming call from {From}, Digits: {Digits}")
+    logger.info(f"[{endpoint_name}] Incoming call from {From}, Recording: {RecordingUrl}")
 
     normalized_from = re.sub(r"\D", "", From)
     user = db.query(User).filter(User.phone_number == int(normalized_from)).first() if normalized_from.isdigit() else None
@@ -1081,74 +1117,64 @@ async def handle_twilio_incoming_call(
         """
         return Response(content=twiml.strip(), media_type="application/xml", status_code=200)
 
-    if Digits:
-        # If the user pressed a key, respond with the digit
-        twiml = f"""
-        <Response>
-            <Say voice="alice">You pressed {Digits}.</Say>
-            <Hangup/>
-        </Response>
-        """
-        return Response(content=twiml.strip(), media_type="application/xml", status_code=200)
-
-    # No digits yet → start AI prompt
-    user_query_text = "User initiated a voice call. How can I assist?"
     chat_id = f"voice_{normalized_from}"
 
-    # AI interaction and DB logging
     try:
-        db_query = Query(userId=user.userId, chatId=chat_id, query_text=user_query_text)
-        db.add(db_query)
-        db.commit()
-        db.refresh(db_query)
+        if RecordingUrl:
+            # Step 2: Handle user reply from previous turn
+            user_transcript = transcribe_audio(RecordingUrl)  # You must implement or integrate this
+            db_query = Query(userId=user.userId, chatId=chat_id, query_text=user_transcript)
+            db.add(db_query)
+            db.commit()
+            db.refresh(db_query)
 
-        shortterm = db.query(DBFile).filter(DBFile.userId == user.userId, DBFile.filename == "short_term_memory.json").first()
-        longterm = db.query(DBFile).filter(DBFile.userId == user.userId, DBFile.filename == "long_term_memory.json").first()
+            # Load memory
+            shortterm = db.query(DBFile).filter(DBFile.userId == user.userId, DBFile.filename == "short_term_memory.json").first()
+            longterm = db.query(DBFile).filter(DBFile.userId == user.userId, DBFile.filename == "long_term_memory.json").first()
+            short_content = json.loads(shortterm.content.decode('utf-8')) if shortterm and shortterm.content else {}
+            long_content = json.loads(longterm.content.decode('utf-8')) if longterm and longterm.content else {}
 
-        short_content = json.loads(shortterm.content.decode('utf-8')) if shortterm and shortterm.content else {}
-        long_content = json.loads(longterm.content.decode('utf-8')) if longterm and longterm.content else {}
+            short_term_memory = ShortTermMemoryManager(memory_content=short_content)
+            long_term_memory = LongTermMemoryManager(memory_content=long_content)
 
-        short_term_memory = ShortTermMemoryManager(memory_content=short_content)
-        long_term_memory = LongTermMemoryManager(memory_content=long_content)
+            aux_data = {
+                "username": user.username,
+                "user_id": user.userId,
+                "chat_id": chat_id,
+                "query_id": db_query.queryId,
+                "client_info": {"max_tokens": 256, "temperature": 0.5}
+            }
 
-        aux_data = {
-            "username": user.username,
-            "user_id": user.userId,
-            "chat_id": chat_id,
-            "query_id": db_query.queryId,
-            "client_info": {"max_tokens": 256, "temperature": 0.5}
-        }
+            ai_response = ai_query_handler.query_openai(
+                query=user_transcript,
+                long_term_memory=long_term_memory,
+                short_term_memory=short_term_memory,
+                aux_data=aux_data,
+                max_tokens=256,
+                temperature=0.5,
+            )
 
-        ai_response = ai_query_handler.query_openai(
-            query=user_query_text,
-            long_term_memory=long_term_memory,
-            short_term_memory=short_term_memory,
-            aux_data=aux_data,
-            max_tokens=256,
-            temperature=0.5,
-        )
+            db_query.response = ai_response
+            db.commit()
 
-        db_query.response = ai_response
-        db.commit()
+            # Update memory
+            summary = ai_query_handler.summarize_conversation(user_transcript, ai_response)
+            short_content.setdefault("conversations", []).append({
+                "query": user_transcript, "response": ai_response, "summary": summary
+            })
+            if shortterm:
+                shortterm.content = json.dumps(short_content).encode('utf-8')
+                shortterm.size = len(shortterm.content)
+                db.commit()
+        else:
+            # Step 1: Initial prompt
+            ai_response = "Hi there, how can I help you today?"
 
-        # Optionally update memory (skip if not needed in voice)
-        summary = ai_query_handler.summarize_conversation(user_query_text, ai_response)
-        short_content.setdefault("conversations", []).append({
-            "query": user_query_text, "response": ai_response, "summary": summary
-        })
-        if shortterm:
-            shortterm.content = json.dumps(short_content).encode('utf-8')
-            shortterm.size = len(shortterm.content)
-        db.commit()
-
-        # Respond with AI and allow digit input
+        # Step 3: Speak response and ask for next message
         twiml = f"""
         <Response>
             <Say voice="alice">{ai_response}</Say>
-            <Pause length="1" />
-            <Gather action="/api/webhooks/twilio/incoming-call" numDigits="1" timeout="5">
-                <Say voice="alice">Please press any number from one to nine.</Say>
-            </Gather>
+            <Record action="/api/webhooks/twilio/incoming-call" maxLength="30" timeout="5" transcribe="false" playBeep="true"/>
         </Response>
         """
         return Response(content=twiml.strip(), media_type="application/xml", status_code=200)
@@ -1164,7 +1190,7 @@ async def handle_twilio_incoming_call(
         """
         return Response(content=twiml_error.strip(), media_type="application/xml", status_code=500)
 
-        
+
 
 def send_twilio_message(to_phone_number: str, message: str):
     try:
