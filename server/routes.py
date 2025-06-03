@@ -36,7 +36,7 @@ from .auth import (
 from aiagent.handler import query as ai_query_handler
 from aiagent.memory.memory_manager import LongTermMemoryManager, ShortTermMemoryManager
 from aiagent.context.reference import read_references
-from aiagent.tools.voice import Whisper, download_audio
+# from aiagent.tools.voice import Whisper, download_audio
 
 # whisper_transcriber = Whisper(model_size='tiny')  # Load once at the top
 
