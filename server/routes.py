@@ -38,41 +38,41 @@ from aiagent.memory.memory_manager import LongTermMemoryManager, ShortTermMemory
 from aiagent.context.reference import read_references
 from aiagent.tools.voice import Whisper, download_audio
 
-whisper_transcriber = Whisper(model_size='tiny')  # Load once at the top
+# whisper_transcriber = Whisper(model_size='tiny')  # Load once at the top
 
 
-def transcribe_audio(audio_url: str) -> str:
-    """Transcribe audio from a URL using the Whisper model.
+# def transcribe_audio(audio_url: str) -> str:
+#     """Transcribe audio from a URL using the Whisper model.
     
-    Args:
-        audio_url: URL of the audio file to transcribe
+#     Args:
+#         audio_url: URL of the audio file to transcribe
         
-    Returns:
-        str: The transcribed text
+#     Returns:
+#         str: The transcribed text
         
-    Raises:
-        Exception: If transcription fails
-    """
-    logger.info(f"Transcribing audio from URL: {audio_url}")
-    try:
-        # Download the audio file
-        audio_path = download_audio(audio_url)
+#     Raises:
+#         Exception: If transcription fails
+#     """
+#     logger.info(f"Transcribing audio from URL: {audio_url}")
+#     try:
+#         # Download the audio file
+#         audio_path = download_audio(audio_url)
         
-        # Transcribe the audio
-        text, language = whisper_transcriber.transcribe(audio_path)
-        logger.info(f"Transcription completed. Detected language: {language}")
+#         # Transcribe the audio
+#         text, language = whisper_transcriber.transcribe(audio_path)
+#         logger.info(f"Transcription completed. Detected language: {language}")
         
-        # Clean up the downloaded file
-        try:
-            os.remove(audio_path)
-        except Exception as e:
-            logger.warning(f"Failed to delete temporary audio file {audio_path}: {str(e)}")
+#         # Clean up the downloaded file
+#         try:
+#             os.remove(audio_path)
+#         except Exception as e:
+#             logger.warning(f"Failed to delete temporary audio file {audio_path}: {str(e)}")
             
-        return text
+#         return text
         
-    except Exception as e:
-        logger.error(f"Error in transcribe_audio: {str(e)}")
-        raise Exception(f"Failed to transcribe audio: {str(e)}")
+#     except Exception as e:
+#         logger.error(f"Error in transcribe_audio: {str(e)}")
+#         raise Exception(f"Failed to transcribe audio: {str(e)}")
 
 # Set up logger first
 logger = logging.getLogger("lms.server")
@@ -1100,10 +1100,11 @@ async def handle_twilio_incoming_call(
     request: Request,
     From: str = Form(...),
     RecordingUrl: str = Form(None),
+    TranscriptionText: str = Form(None),
     db: Session = Depends(get_db)
 ):
     endpoint_name = "/api/webhooks/twilio/incoming-call"
-    logger.info(f"[{endpoint_name}] Incoming call from {From}, Recording: {RecordingUrl}")
+    logger.info(f"[{endpoint_name}] Incoming call from {From}, Recording: {RecordingUrl}, Transcript: {TranscriptionText}")
 
     normalized_from = re.sub(r"\D", "", From)
     user = db.query(User).filter(User.phone_number == int(normalized_from)).first() if normalized_from.isdigit() else None
@@ -1120,9 +1121,9 @@ async def handle_twilio_incoming_call(
     chat_id = f"voice_{normalized_from}"
 
     try:
-        if RecordingUrl:
-            # Step 2: Handle user reply from previous turn
-            user_transcript = transcribe_audio(RecordingUrl)  # You must implement or integrate this
+        if TranscriptionText:
+            # Step 2: Use Twilio transcription
+            user_transcript = TranscriptionText
             db_query = Query(userId=user.userId, chatId=chat_id, query_text=user_transcript)
             db.add(db_query)
             db.commit()
@@ -1166,17 +1167,33 @@ async def handle_twilio_incoming_call(
                 shortterm.content = json.dumps(short_content).encode('utf-8')
                 shortterm.size = len(shortterm.content)
                 db.commit()
-        else:
-            # Step 1: Initial prompt
-            ai_response = "Hi there, how can I help you today?"
 
-        # Step 3: Speak response and ask for next message
-        twiml = f"""
-        <Response>
-            <Say voice="alice">{ai_response}</Say>
-            <Record action="/api/webhooks/twilio/incoming-call" maxLength="30" timeout="5" transcribe="false" playBeep="true"/>
-        </Response>
-        """
+            # Respond with AI and ask for next input
+            twiml = f"""
+            <Response>
+                <Say voice="alice">{ai_response}</Say>
+                <Record action="/api/webhooks/twilio/incoming-call"
+                        transcribe="true"
+                        transcribeCallback="/api/webhooks/twilio/incoming-call"
+                        maxLength="30"
+                        timeout="5"
+                        playBeep="true" />
+            </Response>
+            """
+        else:
+            # First interaction or no transcription yet
+            twiml = """
+            <Response>
+                <Say voice="alice">Hi there, how can I help you today?</Say>
+                <Record action="/api/webhooks/twilio/incoming-call"
+                        transcribe="true"
+                        transcribeCallback="/api/webhooks/twilio/incoming-call"
+                        maxLength="30"
+                        timeout="5"
+                        playBeep="true" />
+            </Response>
+            """
+
         return Response(content=twiml.strip(), media_type="application/xml", status_code=200)
 
     except Exception as e:
