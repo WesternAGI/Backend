@@ -103,10 +103,10 @@ def query_openai(
         # Add user query
         messages.append({"role": "user", "content": query})
 
-        logging.info(f"Context messages: {messages}")
+        #logging.info(f"Context messages: {messages}")
         
         # Query GROK
-        logging.info("Sending query to GROK")
+        #logging.info("Sending query to GROK")
         response = client.chat.completions.create(
             model="grok-3-mini",
             messages=messages,
@@ -119,7 +119,7 @@ def query_openai(
             finish_reason = response.choices[0].finish_reason
 
             if ai_content is not None:
-                logging.info("Received response content from GROK.")
+                #logging.info("Received response content from GROK.")
                 return ai_content
             else:
                 # Content is None, log finish_reason and the message object
@@ -129,11 +129,11 @@ def query_openai(
                 return f"Error querying AI: GROK response message content is None. Finish reason: {finish_reason}."
         else:
             # Message object itself is None or no choices
-            logging.error(f"GROK response error: No choices or message object found. Full response: {response.model_dump_json()}")
+            #logging.error(f"GROK response error: No choices or message object found. Full response: {response.model_dump_json()}")
             return "Error querying AI: No choices or message object returned from GROK."
 
     except Exception as e:
-        logging.error(f"Error querying GROK: {e}", exc_info=True)
+        #logging.error(f"Error querying GROK: {e}", exc_info=True)
         return f"Error querying AI: {str(e)}"
 
 
@@ -159,7 +159,7 @@ def summarize_conversation(query: str, response: str) -> str:
             return "Summary not available - GROK API key not found."
         client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
     except Exception as e:
-        logging.exception(f"Failed to initialize GROK client: {e}")
+        #logging.exception(f"Failed to initialize GROK client: {e}")
         return f"Summary not available - Failed to initialize GROK client: {e}"
 
     try:
@@ -188,17 +188,17 @@ def summarize_conversation(query: str, response: str) -> str:
             if summary.startswith(prefix):
                 summary = summary[len(prefix) :].strip()
 
-        logging.info(f"Generated conversation summary ({len(summary)} chars)")
+        #logging.info(f"Generated conversation summary ({len(summary)} chars)")
         return summary
 
     except Exception as e:
-        logging.error(f"Error generating conversation summary: {e}")
+        #logging.error(f"Error generating conversation summary: {e}")
         return "Error generating summary."
 
 
 def update_memory(query: str, response: str, memory: BaseMemoryManager):
     # Initialize client and check API key here
-    print("memory:", memory._memory_content)
+    
     try:
         api_key = os.environ.get("GROK_API_KEY")
         if not api_key:
@@ -208,7 +208,7 @@ def update_memory(query: str, response: str, memory: BaseMemoryManager):
             return "Summary not available - GROK API key not found."
         client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
     except Exception as e:
-        logging.exception(f"Failed to initialize GROK client: {e}")
+        #logging.exception(f"Failed to initialize GROK client: {e}")
         return f"Summary not available - Failed to initialize GROK client: {e}"
     try:
         updated = False 
@@ -237,8 +237,8 @@ def update_memory(query: str, response: str, memory: BaseMemoryManager):
 
         # Extract and clean up the summary
         suggested_updates = completion.choices[0].message.content
-        print("suggested_updates:", suggested_updates)
-        logging.info(f"Suggested updates: {suggested_updates}")
+        
+        #logging.info(f"Suggested updates: {suggested_updates}")
         # parse the suggested updates
         updates = suggested_updates.split(",")
 
@@ -248,15 +248,15 @@ def update_memory(query: str, response: str, memory: BaseMemoryManager):
             if update.startswith("None"):
                 continue
             key, value = update.split(":")
-            print("key:", key, " value:", value)
+            
             memory.set(key.strip(), value.strip())
             updated = True
 
-        print("Memory updated:", memory._memory_content)
-        logging.info(f"Memory updated: {memory._memory_content}")
+        
+        #logging.info(f"Memory updated: {memory._memory_content}")
         return updated
     except Exception as e:
-        logging.exception(f"Failed to update memory: {e}")
+        #logging.exception(f"Failed to update memory: {e}")
         return False
 
 
@@ -285,10 +285,10 @@ def ask_ai(
     # Determine memory file paths
     if client_dir:
         base_memory_path = client_dir
-        logging.info(f"Using client-provided directory for memory: {base_memory_path}")
+        #logging.info(f"Using client-provided directory for memory: {base_memory_path}")
     else:
         base_memory_path = DEFAULT_DATA_PATH
-        logging.info(f"Using default data directory for memory: {base_memory_path}")
+        #logging.info(f"Using default data directory for memory: {base_memory_path}")
         os.makedirs(base_memory_path, exist_ok=True) # Ensure default data directory exists
 
     long_term_memory_file = os.path.join(base_memory_path, "long_term_memory.json")
@@ -302,12 +302,12 @@ def ask_ai(
     try:
         references = read_references()
     except Exception as e:
-        logging.error(f"Error loading references: {e}")
+        #logging.error(f"Error loading references: {e}")
         references = {}
         
     # Check if we're running in a serverless environment
     if os.environ.get("VERCEL") and not references:
-        logging.info("Running in Vercel environment, providing minimal context due to filesystem limitations")
+        #logging.info("Running in Vercel environment, providing minimal context due to filesystem limitations")
         # Add a synthetic reference to explain the limitations
         references = {
             "system_info.txt": "This is a limited deployment running on serverless infrastructure. " +

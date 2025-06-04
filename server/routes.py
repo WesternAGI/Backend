@@ -114,7 +114,7 @@ def update_status():
             user_count = db.query(User).count()
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             status_message = f"Thoth API is running (as of {current_time}). Total users: {user_count}"
-            logger.info(f"Status updated: {status_message}")
+            #logger.info(f"Status updated: {status_message}")
 
     except Exception as e:
         logger.error(f"Error updating status: {e}")
@@ -157,7 +157,7 @@ def start_scheduler():
             replace_existing=True
         )
         scheduler.start()
-        logger.info("Scheduler started for status updates")
+        #logger.info("Scheduler started for status updates")
         atexit.register(lambda: scheduler.shutdown() if scheduler else None)
 
 # Start the scheduler when the module loads
@@ -166,7 +166,7 @@ start_scheduler()
 # Set ASSETS_FOLDER to /tmp/assets if on Vercel or read-only FS, else use 'assets'
 if os.environ.get("VERCEL") or os.environ.get("READ_ONLY_FS"):
     ASSETS_FOLDER = "/tmp/assets"
-    logger.warning("[Assets] Using /tmp/assets due to read-only filesystem or Vercel environment.")
+    #logger.warning("[Assets] Using /tmp/assets due to read-only filesystem or Vercel environment.")
 else:
     ASSETS_FOLDER = "assets"
 os.makedirs(ASSETS_FOLDER, exist_ok=True)
@@ -232,14 +232,14 @@ def register(req: RegisterRequest, db: SessionLocal = Depends(get_db)):
     # Check for existing user by username
     existing_user = db.query(User).filter(User.username == req.username).first()
     if existing_user:
-        logger.warning(f"[register] Registration attempt with existing username: {req.username}")
+        #logger.warning(f"[register] Registration attempt with existing username: {req.username}")
         raise HTTPException(status_code=400, detail="Username already registered")
 
     # Check for existing user by phone_number if provided
     if req.phone_number is not None:
         existing_user_by_phone = db.query(User).filter(User.phone_number == req.phone_number).first()
         if existing_user_by_phone:
-            logger.warning(f"[register] Registration attempt with existing phone number: {req.phone_number}")
+            #logger.warning(f"[register] Registration attempt with existing phone number: {req.phone_number}")
             raise HTTPException(status_code=400, detail="Phone number already registered")
 
     # Create new user
@@ -349,8 +349,8 @@ def delete_user(username: str, current_user: User = Depends(get_current_user), d
         return {"message": f"User '{username}' deleted successfully."}
     except Exception as e:
         db.rollback()
-        logger.error(f"[delete_user] Exception type: {type(e)}, repr: {repr(e)}")
-        logger.error(f"Error deleting user {username}: {str(e)}")
+        #logger.error(f"[delete_user] Exception type: {type(e)}, repr: {repr(e)}")
+        #logger.error(f"Error deleting user {username}: {str(e)}")
         if os.environ.get("VERCEL"):
             # In Vercel, return a more user-friendly error only for non-auth errors
             return {"message": f"Partial user deletion for '{username}'. Database records removed but user files may remain due to serverless environment limitations."}
@@ -743,7 +743,7 @@ async def update_active_item(
         db.commit()
         
         # Log success
-        logger.info(f"[SERVER] Updated active item for user {user.userId}, device {device}")
+        #logger.info(f"[SERVER] Updated active item for user {user.userId}, device {device}")
         
         # Return success response with updated active items
         response = {
@@ -951,14 +951,14 @@ async def handle_twilio_incoming_message(request: Request, From: str = Form(...)
     client_host = request.client.host if request.client else "unknown_client"
     endpoint_name = "/api/webhooks/twilio/incoming-message"
     log_request_start(endpoint_name, "POST", dict(request.headers), client_host)
-    logger.info(f"[{endpoint_name}] Twilio Incoming SMS from {From}: {Body}")
+    #logger.info(f"[{endpoint_name}] Twilio Incoming SMS from {From}: {Body}")
 
     normalized_from_number_str = re.sub(r'\D', '', From)
     user_query_text = Body
     found_user: Optional[User] = None
 
     if not normalized_from_number_str:
-        logger.warning(f"[{endpoint_name}] Received empty or invalid 'From' number: {From}. Cannot look up user.")
+        #logger.warning(f"[{endpoint_name}] Received empty or invalid 'From' number: {From}. Cannot look up user.")
         twiml_response = "<Response><Message>Sorry, we could not identify your phone number.</Message></Response>"
         log_response(200, twiml_response, endpoint_name)
         return Response(content=twiml_response, media_type="application/xml", status_code=200)
@@ -968,19 +968,19 @@ async def handle_twilio_incoming_message(request: Request, From: str = Form(...)
     try:
         phone_number_to_lookup = int(normalized_from_number_str)
         found_user = db.query(User).filter(User.phone_number == phone_number_to_lookup).first()
-        if found_user:
-            logger.info(f"[{endpoint_name}] Matched Twilio number {normalized_from_number_str} (parsed as {phone_number_to_lookup}) to user {found_user.username} (ID: {found_user.userId}) via direct DB lookup.")
+        # if found_user:
+            #logger.info(f"[{endpoint_name}] Matched Twilio number {normalized_from_number_str} (parsed as {phone_number_to_lookup}) to user {found_user.username} (ID: {found_user.userId}) via direct DB lookup.")
     except ValueError:
-        logger.error(f"[{endpoint_name}] Could not convert normalized phone number '{normalized_from_number_str}' to int for DB lookup.")
+        #logger.error(f"[{endpoint_name}] Could not convert normalized phone number '{normalized_from_number_str}' to int for DB lookup.")
         found_user = None # Ensure found_user is None if conversion fails
     except Exception as e:
-        logger.error(f"[{endpoint_name}] Error during direct DB lookup for phone number {normalized_from_number_str}: {e}")
+        #logger.error(f"[{endpoint_name}] Error during direct DB lookup for phone number {normalized_from_number_str}: {e}")
         found_user = None # Ensure found_user is None on other DB errors
 
 
 
     if not found_user:
-        logger.warning(f"[{endpoint_name}] No user found for Twilio number {normalized_from_number_str} ({From}) after all lookups. Sending 'not recognized' message.")
+        #logger.warning(f"[{endpoint_name}] No user found for Twilio number {normalized_from_number_str} ({From}) after all lookups. Sending 'not recognized' message.")
         twiml_response = "<Response><Message>Sorry, you are not recognized by Gad.</Message></Response>"
         log_response(200, twiml_response, endpoint_name)
         return Response(content=twiml_response, media_type="application/xml", status_code=200)
@@ -1060,8 +1060,9 @@ async def handle_twilio_incoming_message(request: Request, From: str = Form(...)
                 shortterm_file_db.content = json.dumps(shortterm_content).encode('utf-8')
                 shortterm_file_db.size = len(shortterm_file_db.content)
             else: # Should not happen if user registration creates it
-                logger.warning(f"[{endpoint_name}] short_term_memory.json not found for user {user.userId}, creating new.")
+                #logger.warning(f"[{endpoint_name}] short_term_memory.json not found for user {user.userId}, creating new.")
                 # Create if missing logic might be needed here
+                pass 
 
             if updated_ltm and longterm_file_db:
                 longterm_file_db.content = json.dumps(long_term_memory.get_content()).encode('utf-8')
@@ -1074,7 +1075,7 @@ async def handle_twilio_incoming_message(request: Request, From: str = Form(...)
         return Response(content=twiml_reply, media_type="application/xml", status_code=200)
 
     except Exception as e:
-        logger.error(f"[{endpoint_name}] Error processing AI query for SMS: {e}", exc_info=True)
+        #logger.error(f"[{endpoint_name}] Error processing AI query for SMS: {e}", exc_info=True)
         db.rollback() # Rollback any partial DB changes on error
         twiml_error_reply = "<Response><Message>Sorry, an internal error occurred while processing your message.</Message></Response>"
         return Response(content=twiml_error_reply, media_type="application/xml", status_code=500)
@@ -1087,7 +1088,7 @@ async def handle_twilio_message_status(request: Request, MessageSid: str = Form(
     """
     client_host = request.client.host if request.client else "unknown_client"
     log_request_start("/api/webhooks/twilio/message-status", "POST", dict(request.headers), client_host)
-    logger.info(f"[/api/webhooks/twilio/message-status] Twilio Message SID {MessageSid} status: {MessageStatus}")
+    #logger.info(f"[/api/webhooks/twilio/message-status] Twilio Message SID {MessageSid} status: {MessageStatus}")
     
     # --- Your logic here to update message status in your DB ---
     
@@ -1104,10 +1105,11 @@ async def handle_twilio_incoming_call(
     db: Session = Depends(get_db)
 ):
     endpoint_name = "/api/webhooks/twilio/incoming-call"
-    logger.info(f"[{endpoint_name}] Incoming call from {From}, Recording: {RecordingUrl}, Transcript: {TranscriptionText}")
+    #logger.info(f"[{endpoint_name}] Incoming call from {From}, Recording: {RecordingUrl}, Transcript: {TranscriptionText}")
 
     normalized_from = re.sub(r"\D", "", From)
     user = db.query(User).filter(User.phone_number == int(normalized_from)).first() if normalized_from.isdigit() else None
+
 
     if not user:
         twiml = """
@@ -1119,6 +1121,7 @@ async def handle_twilio_incoming_call(
         return Response(content=twiml.strip(), media_type="application/xml", status_code=200)
 
     chat_id = f"voice_{normalized_from}"
+    username = user.username
 
     try:
         if TranscriptionText:
@@ -1182,9 +1185,9 @@ async def handle_twilio_incoming_call(
             """
         else:
             # First interaction or no transcription yet
-            twiml = """
+            twiml = f"""
             <Response>
-                <Say voice="alice">Hi there, how can I help you today?</Say>
+                <Say voice="alice">Hi {username}, how can I help you today?</Say>
                 <Record action="/api/webhooks/twilio/incoming-call"
                         transcribe="true"
                         transcribeCallback="/api/webhooks/twilio/incoming-call"
@@ -1197,7 +1200,7 @@ async def handle_twilio_incoming_call(
         return Response(content=twiml.strip(), media_type="application/xml", status_code=200)
 
     except Exception as e:
-        logger.error(f"[{endpoint_name}] Error during AI query: {e}", exc_info=True)
+        #logger.error(f"[{endpoint_name}] Error during AI query: {e}", exc_info=True)
         db.rollback()
         twiml_error = """
         <Response>
@@ -1217,7 +1220,7 @@ def send_twilio_message(to_phone_number: str, message: str):
         from_phone_number = os.environ.get("TWILIO_FROM_NUMBER")
 
         if not all([account_sid, auth_token, from_phone_number]):
-            logger.error("[send_twilio_message] Missing Twilio environment variables")
+            #logger.error("[send_twilio_message] Missing Twilio environment variables")
             return False
 
         client = Client(account_sid, auth_token)
@@ -1228,13 +1231,13 @@ def send_twilio_message(to_phone_number: str, message: str):
             from_=from_phone_number,
             to=to_phone_number
         )
-        logger.info(f"[send_twilio_message] Successfully sent SMS to {to_phone_number}: {message}")
+        #logger.info(f"[send_twilio_message] Successfully sent SMS to {to_phone_number}: {message}")
         return True
     except TwilioRestException as e:
-        logger.error(f"[send_twilio_message] Twilio error sending SMS to {to_phone_number}: {e}")
+        #logger.error(f"[send_twilio_message] Twilio error sending SMS to {to_phone_number}: {e}")
         return False
     except Exception as e:
-        logger.error(f"[send_twilio_message] Unexpected error sending SMS to {to_phone_number}: {e}")
+        #logger.error(f"[send_twilio_message] Unexpected error sending SMS to {to_phone_number}: {e}")
         return False
 
 
