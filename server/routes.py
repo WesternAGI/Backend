@@ -1096,20 +1096,15 @@ async def handle_twilio_message_status(request: Request, MessageSid: str = Form(
     return Response(status_code=200)
 
 
+
 @router.post("/api/webhooks/twilio/incoming-call")
 async def handle_twilio_incoming_call(
     request: Request,
     From: str = Form(...),
-    RecordingUrl: str = Form(None),
-    TranscriptionText: str = Form(None),
     db: Session = Depends(get_db)
 ):
-    endpoint_name = "/api/webhooks/twilio/incoming-call"
-    #logger.info(f"[{endpoint_name}] Incoming call from {From}, Recording: {RecordingUrl}, Transcript: {TranscriptionText}")
-
     normalized_from = re.sub(r"\D", "", From)
     user = db.query(User).filter(User.phone_number == int(normalized_from)).first() if normalized_from.isdigit() else None
-
 
     if not user:
         twiml = """
@@ -1120,95 +1115,87 @@ async def handle_twilio_incoming_call(
         """
         return Response(content=twiml.strip(), media_type="application/xml", status_code=200)
 
-    chat_id = f"voice_{normalized_from}"
     username = user.username
 
-    try:
-        if TranscriptionText:
-            # Step 2: Use Twilio transcription
-            user_transcript = TranscriptionText
-            db_query = Query(userId=user.userId, chatId=chat_id, query_text=user_transcript)
-            db.add(db_query)
-            db.commit()
-            db.refresh(db_query)
+    twiml = f"""
+    <Response>
+        <Say voice="alice">Hi {username}, how can I help you today?</Say>
+        <Record 
+            action="/api/webhooks/twilio/incoming-call" 
+            transcribe="true"
+            transcribeCallback="/api/webhooks/twilio/transcription-callback"
+            maxLength="30"
+            timeout="5"
+            playBeep="true" />
+    </Response>
+    """
+    return Response(content=twiml.strip(), media_type="application/xml", status_code=200)
 
-            # Load memory
-            shortterm = db.query(DBFile).filter(DBFile.userId == user.userId, DBFile.filename == "short_term_memory.json").first()
-            longterm = db.query(DBFile).filter(DBFile.userId == user.userId, DBFile.filename == "long_term_memory.json").first()
-            short_content = json.loads(shortterm.content.decode('utf-8')) if shortterm and shortterm.content else {}
-            long_content = json.loads(longterm.content.decode('utf-8')) if longterm and longterm.content else {}
 
-            short_term_memory = ShortTermMemoryManager(memory_content=short_content)
-            long_term_memory = LongTermMemoryManager(memory_content=long_content)
+@router.post("/api/webhooks/twilio/transcription-callback")
+async def handle_transcription_callback(
+    request: Request,
+    From: str = Form(...),
+    TranscriptionText: str = Form(...),
+    RecordingUrl: str = Form(None),
+    db: Session = Depends(get_db)
+):
+    normalized_from = re.sub(r"\D", "", From)
+    user = db.query(User).filter(User.phone_number == int(normalized_from)).first() if normalized_from.isdigit() else None
 
-            aux_data = {
-                "username": user.username,
-                "user_id": user.userId,
-                "chat_id": chat_id,
-                "query_id": db_query.queryId,
-                "client_info": {"max_tokens": 256, "temperature": 0.5}
-            }
+    if not user:
+        return Response(status_code=204)
 
-            ai_response = ai_query_handler.query_openai(
-                query=user_transcript,
-                long_term_memory=long_term_memory,
-                short_term_memory=short_term_memory,
-                aux_data=aux_data,
-                max_tokens=256,
-                temperature=0.5,
-            )
+    chat_id = f"voice_{normalized_from}"
+    user_transcript = TranscriptionText
 
-            db_query.response = ai_response
-            db.commit()
+    # Save query
+    db_query = Query(userId=user.userId, chatId=chat_id, query_text=user_transcript)
+    db.add(db_query)
+    db.commit()
+    db.refresh(db_query)
 
-            # Update memory
-            summary = ai_query_handler.summarize_conversation(user_transcript, ai_response)
-            short_content.setdefault("conversations", []).append({
-                "query": user_transcript, "response": ai_response, "summary": summary
-            })
-            if shortterm:
-                shortterm.content = json.dumps(short_content).encode('utf-8')
-                shortterm.size = len(shortterm.content)
-                db.commit()
+    # Load memory
+    shortterm = db.query(DBFile).filter(DBFile.userId == user.userId, DBFile.filename == "short_term_memory.json").first()
+    longterm = db.query(DBFile).filter(DBFile.userId == user.userId, DBFile.filename == "long_term_memory.json").first()
+    short_content = json.loads(shortterm.content.decode('utf-8')) if shortterm and shortterm.content else {}
+    long_content = json.loads(longterm.content.decode('utf-8')) if longterm and longterm.content else {}
 
-            # Respond with AI and ask for next input
-            twiml = f"""
-            <Response>
-                <Say voice="alice">{ai_response}</Say>
-                <Record action="/api/webhooks/twilio/incoming-call"
-                        transcribe="true"
-                        transcribeCallback="/api/webhooks/twilio/incoming-call"
-                        maxLength="30"
-                        timeout="5"
-                        playBeep="true" />
-            </Response>
-            """
-        else:
-            # First interaction or no transcription yet
-            twiml = f"""
-            <Response>
-                <Say voice="alice">Hi {username}, how can I help you today?</Say>
-                <Record action="/api/webhooks/twilio/incoming-call"
-                        transcribe="true"
-                        transcribeCallback="/api/webhooks/twilio/incoming-call"
-                        maxLength="30"
-                        timeout="5"
-                        playBeep="true" />
-            </Response>
-            """
+    short_term_memory = ShortTermMemoryManager(memory_content=short_content)
+    long_term_memory = LongTermMemoryManager(memory_content=long_content)
 
-        return Response(content=twiml.strip(), media_type="application/xml", status_code=200)
+    aux_data = {
+        "username": user.username,
+        "user_id": user.userId,
+        "chat_id": chat_id,
+        "query_id": db_query.queryId,
+        "client_info": {"max_tokens": 256, "temperature": 0.5}
+    }
 
-    except Exception as e:
-        #logger.error(f"[{endpoint_name}] Error during AI query: {e}", exc_info=True)
-        db.rollback()
-        twiml_error = """
-        <Response>
-            <Say voice="alice">An error occurred while processing your call. Please try again later.</Say>
-            <Hangup/>
-        </Response>
-        """
-        return Response(content=twiml_error.strip(), media_type="application/xml", status_code=500)
+    ai_response = ai_query_handler.query_openai(
+        query=user_transcript,
+        long_term_memory=long_term_memory,
+        short_term_memory=short_term_memory,
+        aux_data=aux_data,
+        max_tokens=256,
+        temperature=0.5,
+    )
+
+    db_query.response = ai_response
+    db.commit()
+
+    summary = ai_query_handler.summarize_conversation(user_transcript, ai_response)
+    short_content.setdefault("conversations", []).append({
+        "query": user_transcript, "response": ai_response, "summary": summary
+    })
+    if shortterm:
+        shortterm.content = json.dumps(short_content).encode('utf-8')
+        shortterm.size = len(shortterm.content)
+        db.commit()
+
+    # Optionally send an SMS response or set up Twilio to redirect for the next round
+    # Or ignore (Twilio will just hang up or timeout)
+    return Response(status_code=200)
 
 
 
