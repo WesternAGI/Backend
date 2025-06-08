@@ -495,12 +495,7 @@ async def queryEndpoint(request: Request, user: User = Depends(get_current_user)
         page_content = body.get("pageContent")
         if page_content :
             user_query += "\n\n" + "Here is the page content: " + page_content
-        model = body.get("model", "gpt-3.5-turbo")
-        max_tokens = body.get("max_tokens", 1024)
-        temperature = body.get("temperature", 0.7)
-        
-        # Log the incoming query
-        log_ai_call(user_query, model, "/query")
+
         
         # Create a new query record in the database (without response yet)
         db_query = Query(
@@ -542,12 +537,7 @@ async def queryEndpoint(request: Request, user: User = Depends(get_current_user)
                 "username": user.username,
                 "user_id": user.userId,
                 "chat_id": chat_id,
-                "query_id": db_query.queryId,
-                "client_info": {
-                    "model": model,
-                    "max_tokens": max_tokens,
-                    "temperature": temperature
-                }
+                "query_id": db_query.queryId
             }
             
             # Read references
