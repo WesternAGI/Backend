@@ -119,7 +119,7 @@ def update_status():
             ).count()
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             status_message = (
-                f"Thoth API is running (as of {current_time}). "
+                f"Hello from Thoth API is running (as of {current_time}). "
                 f"Total users: {user_count}. Devices online: {online_device_count}"
             )
     except Exception as e:
