@@ -99,8 +99,25 @@ def authenticate_user(db: Session, username: str, password: str) -> Optional[Use
         Optional[User]: The authenticated user object or None if authentication fails
     """
     user = db.query(User).filter(User.username == username).first()
-    if not user or not verify_password(password, user.hashed_password):
+    # If the user record is missing or the stored hash is NULL / empty, treat as invalid credentials.
+    if not user or not user.hashed_password:
         return None
+
+    # Verify the supplied password against the stored bcrypt hash. Wrap in a
+    # try/except so any unexpected passlib errors (e.g. invalid hash format)
+    # don't bubble up as a 500 Internal Server Error – instead, fail the
+    # authentication gracefully.
+    try:
+        if not verify_password(password, user.hashed_password):
+            return None
+    except Exception:
+        # Log at DEBUG level via the app logger if available, but avoid
+        # exposing details to the client.
+        import logging
+        logging.getLogger("lms.server").debug("[Auth] Password verification error for user '%s'", username, exc_info=True)
+        return None
+
+    # Successful authentication
     return user
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
