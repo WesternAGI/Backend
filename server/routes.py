@@ -14,7 +14,7 @@ import logging
 import re
 import uuid
 import atexit
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from urllib.parse import unquote, quote
 import mimetypes
@@ -29,7 +29,7 @@ from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 
 from .utils import compute_sha256
-from .db import User, File as DBFile, Query, Session, SessionLocal
+from .db import User, File as DBFile, Query, Device, Session, SessionLocal
 from .schemas import RegisterRequest, UserResponse
 from .auth import (
     get_db, get_password_hash, authenticate_user, create_access_token,
@@ -114,7 +114,9 @@ def update_status():
     try:
         with SessionLocal() as db:
             user_count = db.query(User).count()
-            online_device_count = db.query(Device).filter(Device.is_online == True).count()
+            online_device_count = db.query(Device).filter(
+                Device.last_seen > datetime.utcnow() - timedelta(minutes=5)
+            ).count()
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             status_message = (
                 f"Thoth API is running (as of {current_time}). "
@@ -143,14 +145,11 @@ def auto_disconnect_stale_devices():
         with SessionLocal() as db:
             threshold = datetime.utcnow() - timedelta(minutes=5)
             stale_devices = db.query(Device).filter(
-                Device.is_online == True,
-                Device.last_active < threshold
+                Device.last_seen < threshold
             ).all()
 
             for device in stale_devices:
-                device.is_online = False
-                db.commit()
-                logger.info(f"Marked device {device.device_id} offline (stale)")
+                logger.info(f"Device {device.deviceId} considered stale (last_seen {device.last_seen})")
 
     except Exception as e:
         logger.error(f"Auto-disconnect failed: {e}")
@@ -191,12 +190,8 @@ def start_scheduler():
 # Start the scheduler when the module loads
 start_scheduler()
 
-# Set ASSETS_FOLDER to /tmp/assets if on Vercel or read-only FS, else use 'assets'
-if os.environ.get("VERCEL") or os.environ.get("READ_ONLY_FS"):
-    ASSETS_FOLDER = "/tmp/assets"
-    #logger.warning("[Assets] Using /tmp/assets due to read-only filesystem or Vercel environment.")
-else:
-    ASSETS_FOLDER = "assets"
+# Initialize assets folder
+ASSETS_FOLDER = "assets"
 os.makedirs(ASSETS_FOLDER, exist_ok=True)
 
 # Logging helpers (stubs for demonstration)
@@ -217,14 +212,6 @@ def log_ai_response(response, endpoint):
     logger.info(f"[{endpoint}] AI response: {response}")
 def log_something(something, endpoint):
     logger.info(f"[{endpoint}] Something: {something}")
-
-# Set ASSETS_FOLDER to /tmp/assets if on Vercel or read-only FS, else use 'assets'
-if os.environ.get("VERCEL") or os.environ.get("READ_ONLY_FS"):
-    ASSETS_FOLDER = "/tmp/assets"
-    logger.warning("[Assets] Using /tmp/assets due to read-only filesystem or Vercel environment.")
-else:
-    ASSETS_FOLDER = "assets"
-os.makedirs(ASSETS_FOLDER, exist_ok=True)
 
 @router.get("/")
 def root():
@@ -976,13 +963,13 @@ async def device_heartbeat(
     now = datetime.utcnow()
 
     device = db.query(Device).filter(
-        Device.user_id == user.userId,
+        Device.userId == user.userId,
         Device.device_name == device_name
     ).first()
 
     if not device:
         device = Device(
-            user_id=user.userId,
+            userId=user.userId,
             device_name=device_name,
             device_type=device_type
         )
@@ -990,17 +977,13 @@ async def device_heartbeat(
         db.commit()
         db.refresh(device)
 
-    device.is_online = True
-    device.last_active = now
-    device.current_app = current_app
-    device.current_page = current_page
-    device.current_url = current_url
+    device.last_seen = now
     db.commit()
 
     return {
         "message": "Device heartbeat received",
-        "device_id": device.device_id,
-        "online": True
+        "deviceId": device.deviceId,
+        "last_seen": device.last_seen.isoformat()
     }
 
 
@@ -1011,16 +994,15 @@ async def device_logout(
     db: Session = Depends(get_db)
 ):
     device = db.query(Device).filter(
-        Device.user_id == user.userId,
+        Device.userId == user.userId,
         Device.device_name == device_name
     ).first()
 
     if device:
-        device.is_online = False
-        device.last_active = datetime.utcnow()
+        device.last_seen = datetime.utcnow()
         db.commit()
 
-    return {"status": "logged out", "device_id": device.device_id if device else None}
+    return {"status": "logged out", "deviceId": device.deviceId if device else None}
 
 
 

@@ -59,6 +59,8 @@ class User(Base):
     """Relationship to Query objects created by this user"""
     sessions = relationship("Session", back_populates="user")
     """Relationship to Session objects for this user"""
+    devices = relationship("Device", back_populates="user")
+    """Relationship to Device objects for this user"""
 
 
 class File(Base):
@@ -100,6 +102,8 @@ class File(Base):
     # Relationships
     user = relationship("User", back_populates="files")
     """Relationship to the User who owns this file"""
+    file_device_updates = relationship("FileDeviceUpdate", back_populates="file")
+    """Relationship to FileDeviceUpdate objects for this file"""
 
 
 class Query(Base):
@@ -158,7 +162,38 @@ class Session(Base):
     """Relationship to the User who owns this session"""
 
 
+class Device(Base):
+    """Device model representing user devices that interact with the platform."""
+    __tablename__ = "device"
 
+    deviceId = Column("device_id", Integer, primary_key=True, autoincrement=True, index=True)
+    userId = Column("user_id", Integer, ForeignKey("user_account.user_id"), nullable=False)
+    device_name = Column("device_name", String, nullable=False)
+    device_type = Column("device_type", String, nullable=False)
+    last_seen = Column("last_seen", DateTime, default=datetime.utcnow)
+
+    # Relationship back to user
+    user = relationship("User", back_populates="devices")
+    """Relationship to the User who owns this device"""
+    file_device_updates = relationship("FileDeviceUpdate", back_populates="device")
+    """Relationship to FileDeviceUpdate objects for this device"""
+
+
+class FileDeviceUpdate(Base):
+    """Model representing updates of files across devices."""
+    __tablename__ = "file_device_update"
+
+    updateId = Column("update_id", Integer, primary_key=True, autoincrement=True, index=True)
+    fileId = Column("file_id", Integer, ForeignKey("file.file_id"), nullable=False)
+    deviceId = Column("device_id", Integer, ForeignKey("device.device_id"), nullable=False)
+    updated_at = Column("updated_at", DateTime, default=datetime.utcnow)
+    file_hash = Column("file_hash", Text, nullable=True)
+
+    # Relationships
+    file = relationship("File", back_populates="file_device_updates")
+    """Relationship to the File that this update is for"""
+    device = relationship("Device", back_populates="file_device_updates")
+    """Relationship to the Device that this update is for"""
 
 
 # DO NOT run migrations or create tables at import time in serverless environments!
