@@ -17,12 +17,19 @@ from typing import Optional
 import os
 from .db import User, SessionLocal
 
-SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60))
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# Load secret key; fall back to a default (development) key to avoid runtime errors
+# NOTE: In production, ALWAYS set the SECRET_KEY environment variable to a strong, random value.
+# If SECRET_KEY is missing, we log a warning and use a weak default to keep the API online instead of crashing.
+SECRET_KEY = os.getenv("SECRET_KEY") or "__insecure_dev_key_change_me__"
+if SECRET_KEY == "__insecure_dev_key_change_me__":
+    import logging
+    logging.getLogger("lms.server").warning("[Auth] SECRET_KEY env var not set. Using insecure default key. Set SECRET_KEY for production!")
 
 def get_db():
     """Create and yield a database session.
