@@ -38,18 +38,18 @@ class User(Base):
     This model stores user credentials and settings. The password is stored
     as a hash, never in plain text.
     """
-    __tablename__ = "User"
-    userId = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    __tablename__ = "user_account"
+    userId = Column("user_id", Integer, primary_key=True, autoincrement=True, index=True)
     """Unique identifier for the user"""
-    username = Column(String, unique=True, index=True, nullable=False)
+    username = Column("username", String, unique=True, index=True, nullable=False)
     """Unique username for authentication"""
-    hashed_password = Column(String)
+    hashed_password = Column("hashed_password", String)
     """Bcrypt hash of the user's password"""
-    max_file_size = Column(Integer, default=524288000)  # 500MB default max file size
+    max_file_size = Column("max_file_size", Integer, default=524288000)  # 500MB default max file size
     """Maximum allowed file size in bytes (default: 500MB)"""
-    role = Column(SmallInteger, default=0)  # Added user's role, int2 with default 0
+    role = Column("role", SmallInteger, default=0)  # Added user's role, int2 with default 0
     """User's role (int2 with default 0)"""
-    phone_number = Column(BigInteger, nullable=True, unique=True, index=True) # Added phone number
+    phone_number = Column("phone_number", BigInteger, nullable=True, unique=True, index=True) # Added phone number
     """User's phone number"""
     
     # Relationships
@@ -75,23 +75,27 @@ class File(Base):
         uploaded_at: Timestamp when the file was uploaded
         user: Relationship to the User who owns this file
     """
-    __tablename__ = "File"
-    fileId = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    __tablename__ = "file"
+    fileId = Column("file_id", Integer, primary_key=True, autoincrement=True, index=True)
     """Unique identifier for the file"""
-    filename = Column(String, nullable=False)
+    filename = Column("file_name", String, nullable=False)
     """Name of the uploaded file"""
-    userId = Column(Integer, ForeignKey("User.userId"), nullable=False)
+    userId = Column("user_id", Integer, ForeignKey("user_account.user_id"), nullable=False)
     """Foreign key to the user who uploaded the file"""
-    path = Column(String, nullable=True)  # Now nullable since we store content in DB
+    path = Column("path", String, nullable=True)  # Now nullable since we store content in DB
     """Path where the file is stored on the server (nullable)"""
-    size = Column(Integer, nullable=False)
+    size = Column("size", Integer, nullable=False)
     """Size of the file in bytes"""
-    content = Column(LargeBinary, nullable=True)  # Binary content of the file
+    content = Column("content", LargeBinary, nullable=True)  # Binary content of the file
     """Binary content of the file"""
-    content_type = Column(String(255), nullable=True)  # MIME type
+    content_type = Column("content_type", String(255), nullable=True)  # MIME type
     """MIME type of the file"""
-    uploaded_at = Column(DateTime, default=datetime.utcnow)
+    uploaded_at = Column("uploaded_at", DateTime, default=datetime.utcnow)
     """Timestamp when the file was uploaded"""
+    file_hash = Column("file_hash", Text, nullable=True)
+    """Hash of the file"""
+    last_modified = Column("last_modified", DateTime, nullable=True)
+    """Timestamp when the file was last modified"""
     
     # Relationships
     user = relationship("User", back_populates="files")
@@ -110,18 +114,18 @@ class Query(Base):
         created_at: Timestamp when the query was made
         user: Relationship to the User who made this query
     """
-    __tablename__ = "Query"
-    queryId = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    __tablename__ = "query"
+    queryId = Column("query_id", Integer, primary_key=True, autoincrement=True, index=True)
     """Unique identifier for the query"""
-    userId = Column(Integer, ForeignKey("User.userId"), nullable=False)
+    userId = Column("user_id", Integer, ForeignKey("user_account.user_id"), nullable=False)
     """Foreign key to the user who made the query"""
-    chatId = Column(String, nullable=True)
+    chatId = Column("chat_id", String, nullable=True)
     """Identifier for grouping related queries into conversations"""
-    query_text = Column(Text, nullable=False)
+    query_text = Column("query_text", Text, nullable=False)
     """The text of the user's query"""
-    response = Column(Text, nullable=True)
+    response = Column("response", Text, nullable=True)
     """The AI response to the query"""
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column("created_at", DateTime, default=datetime.utcnow)
     """Timestamp when the query was made"""
     
     # Relationships
@@ -139,14 +143,14 @@ class Session(Base):
         expires_at: Timestamp when the session expires
         user: Relationship to the User who owns this session
     """
-    __tablename__ = "Session"
-    sessionId = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    __tablename__ = "session"
+    sessionId = Column("session_id", Integer, primary_key=True, autoincrement=True, index=True)
     """Unique identifier for the session"""
-    userId = Column(Integer, ForeignKey("User.userId"), nullable=False)
+    userId = Column("user_id", Integer, ForeignKey("user_account.user_id"), nullable=False)
     """Foreign key to the user who owns this session"""
-    token = Column(String, nullable=False)
+    token = Column("token", String, nullable=False)
     """Session token for authentication"""
-    expires_at = Column(DateTime, nullable=False)
+    expires_at = Column("expires_at", DateTime, nullable=False)
     """Timestamp when the session expires"""
     
     # Relationships
