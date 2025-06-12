@@ -555,8 +555,8 @@ async def queryEndpoint(request: Request, user: User = Depends(get_current_user)
                 short_term_memory=short_term_memory,
                 aux_data=aux_data,
                 references=references,
-                max_tokens=max_tokens,
-                temperature=temperature,
+                max_tokens=1000,  # Default max tokens
+                temperature=0.7  # Default temperature
             )
             
             # If the query was successful, update the memory
@@ -1216,11 +1216,3 @@ def send_twilio_message(to_phone_number: str, message: str):
     except Exception as e:
         #logger.error(f"[send_twilio_message] Unexpected error sending SMS to {to_phone_number}: {e}")
         return False
-
-
-
-
-
-
-
-

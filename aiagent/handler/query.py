@@ -110,6 +110,8 @@ def query_openai(
         response = client.chat.completions.create(
             model="grok-3-mini",
             messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
         )
 
 
