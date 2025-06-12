@@ -17,6 +17,7 @@ import atexit
 from datetime import datetime
 from typing import Dict, List, Optional
 from urllib.parse import unquote, quote
+import mimetypes
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile as FastAPIFile, File, Request, Header, Form, Body
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -27,6 +28,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 
+from .utils import compute_sha256
 from .db import User, File as DBFile, Query, Session, SessionLocal
 from .schemas import RegisterRequest, UserResponse
 from .auth import (
@@ -112,10 +114,12 @@ def update_status():
     try:
         with SessionLocal() as db:
             user_count = db.query(User).count()
+            online_device_count = db.query(Device).filter(Device.is_online == True).count()
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            status_message = f"Thoth API is running (as of {current_time}). Total users: {user_count}"
-            #logger.info(f"Status updated: {status_message}")
-
+            status_message = (
+                f"Thoth API is running (as of {current_time}). "
+                f"Total users: {user_count}. Devices online: {online_device_count}"
+            )
     except Exception as e:
         logger.error(f"Error updating status: {e}")
 
@@ -133,6 +137,23 @@ def send_status():
     except Exception as e:
         logger.error(f"[send_status] Error sending SMS: {e}")
 
+
+def auto_disconnect_stale_devices():
+    try:
+        with SessionLocal() as db:
+            threshold = datetime.utcnow() - timedelta(minutes=5)
+            stale_devices = db.query(Device).filter(
+                Device.is_online == True,
+                Device.last_active < threshold
+            ).all()
+
+            for device in stale_devices:
+                device.is_online = False
+                db.commit()
+                logger.info(f"Marked device {device.device_id} offline (stale)")
+
+    except Exception as e:
+        logger.error(f"Auto-disconnect failed: {e}")
 
 
 # Initialize the scheduler
@@ -154,6 +175,13 @@ def start_scheduler():
             trigger=IntervalTrigger(minutes=200),
             id='send_status_job',
             name='Send status every 10 minute',
+            replace_existing=True
+        )
+        scheduler.add_job(
+            auto_disconnect_stale_devices,
+            trigger=IntervalTrigger(minutes=2),
+            id='auto_disconnect_job',
+            name='Auto disconnect stale devices',
             replace_existing=True
         )
         scheduler.start()
@@ -381,70 +409,69 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: SessionLocal = D
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
+
+
 @router.post("/upload")
-async def upload_file(file: FastAPIFile = File(...), user: User = Depends(get_current_user), db: SessionLocal = Depends(get_db)):
-    """Upload a file to the system.
-    
-    The file is stored in the user's directory within the assets folder and tracked in the database.
-    
-    Args:
-        file: The file to upload
-        user: The authenticated user uploading the file
-        db: Database session dependency
-        
-    Returns:
-        dict: Information about the uploaded file
-        
-    Raises:
-        HTTPException: 400 if file is too large
-        HTTPException: 500 if file upload fails
-    """
+async def upload_file(
+    file: FastAPIFile = File(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     try:
-        # Read file contents
         contents = await file.read()
-        
-        # Check file size
         file_size = len(contents)
+        file_hash = compute_sha256(contents)
+
         if file_size > user.max_file_size:
             raise HTTPException(status_code=400, detail="File too large")
-        
-        # Detect MIME type
-        import mimetypes
+
+        existing = db.query(DBFile).filter(
+            DBFile.userId == user.userId,
+            DBFile.filename == file.filename
+        ).first()
+
         content_type = mimetypes.guess_type(file.filename)[0] or "application/octet-stream"
-        
-        # Create database record - using the improved schema with content column
-        db_file = DBFile()
-        db_file.filename = file.filename
-        db_file.userId = user.userId
-        db_file.size = file_size
-        db_file.content = contents  # Store binary content directly in the database
-        db_file.content_type = content_type
-        
-        # Also save to filesystem in development environment (not on Vercel) for easier debugging
-        if not os.environ.get("VERCEL") and not os.environ.get("READ_ONLY_FS"):
-            user_folder = os.path.join(ASSETS_FOLDER, str(user.userId))
-            os.makedirs(user_folder, exist_ok=True)
-            filepath = os.path.join(user_folder, file.filename)
-            with open(filepath, "wb") as f:
-                f.write(contents)
-            db_file.path = filepath
-        
-        # Save the file first to get its ID
-        db.add(db_file)
+
+        if existing:
+            if existing.file_hash == file_hash:
+                return {"message": "File already exists", "fileId": existing.fileId}
+            else:
+                existing.content = contents
+                existing.size = file_size
+                existing.file_hash = file_hash
+                existing.uploaded_at = datetime.utcnow()
+                existing.content_type = content_type
+                db.commit()
+                return {"message": "File updated", "fileId": existing.fileId}
+
+        # New file
+        new_file = DBFile(
+            filename=file.filename,
+            userId=user.userId,
+            size=file_size,
+            content=contents,
+            file_hash=file_hash,
+            content_type=content_type,
+            uploaded_at=datetime.utcnow()
+        )
+
+        db.add(new_file)
         db.commit()
-        db.refresh(db_file)
-        
+        db.refresh(new_file)
+
         return {
-            "filename": file.filename, 
-            "size": file_size,
-            "fileId": db_file.fileId,
-            "content_type": content_type,
-            "uploaded_at": db_file.uploaded_at
+            "message": "File uploaded",
+            "fileId": new_file.fileId,
+            "size": new_file.size,
+            "hash": new_file.file_hash
         }
+
     except Exception as e:
         db.rollback()
-        log_error(f"File upload failed: {str(e)}", exc=e, endpoint="/upload")
-        raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
+        log_error(f"Upload failed: {e}", e, endpoint="/upload")
+        raise HTTPException(status_code=500, detail="Upload failed")
+
+
 
 @router.post("/query")
 async def queryEndpoint(request: Request, user: User = Depends(get_current_user), db: SessionLocal = Depends(get_db)):
@@ -913,6 +940,7 @@ def delete_file(fileId: int, user: User = Depends(get_current_user), db: Session
         log_error(f"Error deleting file: {str(e)}", exc=e, endpoint=f"/delete/{fileId}")
         raise HTTPException(status_code=500, detail=f"Error deleting file: {str(e)}")
 
+
 @router.get('/profile', response_model=UserResponse)
 def profile(current_user: User = Depends(get_current_user)):
     """Get profile information for the currently authenticated user.
@@ -929,6 +957,72 @@ def profile(current_user: User = Depends(get_current_user)):
         role=current_user.role,
         phone_number=current_user.phone_number
     )
+
+
+
+# --- Device Endpoints ---
+
+
+@router.post("/device/heartbeat")
+async def device_heartbeat(
+    device_name: str = Form(...),
+    device_type: str = Form(...),
+    current_app: str = Form(None),
+    current_page: str = Form(None),
+    current_url: str = Form(None),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    now = datetime.utcnow()
+
+    device = db.query(Device).filter(
+        Device.user_id == user.userId,
+        Device.device_name == device_name
+    ).first()
+
+    if not device:
+        device = Device(
+            user_id=user.userId,
+            device_name=device_name,
+            device_type=device_type
+        )
+        db.add(device)
+        db.commit()
+        db.refresh(device)
+
+    device.is_online = True
+    device.last_active = now
+    device.current_app = current_app
+    device.current_page = current_page
+    device.current_url = current_url
+    db.commit()
+
+    return {
+        "message": "Device heartbeat received",
+        "device_id": device.device_id,
+        "online": True
+    }
+
+
+@router.post("/device/logout")
+async def device_logout(
+    device_name: str = Form(...),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    device = db.query(Device).filter(
+        Device.user_id == user.userId,
+        Device.device_name == device_name
+    ).first()
+
+    if device:
+        device.is_online = False
+        device.last_active = datetime.utcnow()
+        db.commit()
+
+    return {"status": "logged out", "device_id": device.device_id if device else None}
+
+
 
 # --- Twilio Webhook Endpoints ---
 
