@@ -19,7 +19,7 @@ ALLOWED_ORIGINS = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_origin_regex=r"https?://(localhost(:\d+)?|thothfrontend\.vercel\.app|.*-thoth\.vercel\.app|.*\.vercel\.app|web-production-d7d37\.up\.railway\.app)",  # Allow Vercel and localhost
+    allow_origin_regex=r"(https?://(localhost(:\d+)?|thothfrontend\.vercel\.app|.*-thoth\.vercel\.app|.*\.vercel\.app|web-production-d7d37\.up\.railway\.app)|chrome-extension://nnhcocdhioccnhcbjflcdnicmjlbcnbd)",  # Allow Vercel, localhost, and Chrome extension
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=[
