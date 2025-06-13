@@ -387,8 +387,18 @@ async def login(request: Request, db: SessionLocal = Depends(get_db)):
     form = await request.form()
     username: str = form.get("username")
     password: str = form.get("password")
-    device_name: str = form.get("device_name") or "unknown_device"
-    device_type: str = form.get("device_type") or "unknown_type"
+    device_name: str = form.get("device_name") or None
+    device_type: str = form.get("device_type") or None
+    device_uuid: str = form.get("device_id") or None  # client-provided stable id
+
+    # Guard: we prefer explicit identification; if missing, generate placeholders
+    if not device_uuid:
+        # Fall back to generated uuid to avoid duplicates of "unknown_device"
+        device_uuid = str(uuid.uuid4())
+    if not device_name:
+        device_name = f"device_{device_uuid[:6]}"
+    if not device_type:
+        device_type = "unknown_type"
 
     user = authenticate_user(db, username, password)
     if not user:
@@ -397,49 +407,86 @@ async def login(request: Request, db: SessionLocal = Depends(get_db)):
     # ------------------------------------------------------------------
     # Register / update the device that is requesting the token
     # ------------------------------------------------------------------
-    device = db.query(Device).filter(
-        Device.userId == user.userId,
-        Device.device_name == device_name
-    ).first()
+    device = None
+    if device_uuid:
+        device = db.query(Device).filter(
+            Device.userId == user.userId,
+            Device.device_uuid == device_uuid
+        ).first()
+    if not device:
+        device = db.query(Device).filter(
+            Device.userId == user.userId,
+            Device.device_name == device_name
+        ).first()
 
     if not device:
         device = Device(
             userId=user.userId,
             device_name=device_name,
-            device_type=device_type
+            device_type=device_type,
+            device_uuid=device_uuid,
         )
         db.add(device)
         db.commit()
         db.refresh(device)
+    else:
+        # Keep server-side name/type up-to-date in case they changed on client
+        device.device_name = device_name
+        device.device_type = device_type
+        if device_uuid and not device.device_uuid:
+            device.device_uuid = device_uuid
+        db.commit()
 
     # ------------------------------------------------------------------
     # Create an initial per-device tracking file (<device_id>.json)
     # ------------------------------------------------------------------
     filename = f"{device.deviceId}.json"
-    initial_payload = {
-        "deviceId": device.deviceId,
-        "device_name": device_name,
-        "device_type": device_type,
-        "events": []
-    }
-    payload_bytes = json.dumps(initial_payload).encode("utf-8")
     file_entry = db.query(DBFile).filter(
         DBFile.userId == user.userId,
         DBFile.filename == filename
     ).first()
 
-    if not file_entry:
+    if file_entry and file_entry.content:
+        try:
+            data = json.loads(file_entry.content.decode("utf-8"))
+        except Exception:
+            data = {"events": []}
+    else:
+        data = {
+            "deviceId": device.deviceId,
+            "device_name": device_name,
+            "device_type": device_type,
+            "events": []
+        }
+
+    # Append the current foreground information as a new event
+    data.setdefault("events", []).append({
+        "timestamp": datetime.utcnow().isoformat(),
+        "current_app": None,
+        "current_page": None,
+        "current_url": None
+    })
+
+    updated_bytes = json.dumps(data).encode("utf-8")
+
+    if file_entry:
+        file_entry.content = updated_bytes
+        file_entry.size = len(updated_bytes)
+        file_entry.file_hash = compute_sha256(updated_bytes)
+        file_entry.uploaded_at = datetime.utcnow()
+    else:
         new_file = DBFile(
             filename=filename,
             userId=user.userId,
-            size=len(payload_bytes),
-            content=payload_bytes,
-            file_hash=compute_sha256(payload_bytes),
+            size=len(updated_bytes),
+            content=updated_bytes,
+            file_hash=compute_sha256(updated_bytes),
             content_type="application/json",
             uploaded_at=datetime.utcnow()
         )
         db.add(new_file)
-        db.commit()
+
+    db.commit()
 
     # ------------------------------------------------------------------
     # Generate the access token and respond
@@ -1007,8 +1054,9 @@ def profile(current_user: User = Depends(get_current_user)):
 
 @router.post("/device/heartbeat")
 async def device_heartbeat(
-    device_name: str = Form(...),
-    device_type: str = Form(...),
+    device_id: str = Form(None),  # client stable UUID (device_uuid)
+    device_name: str = Form(None),
+    device_type: str = Form(None),
     current_app: str = Form(None),
     current_page: str = Form(None),
     current_url: str = Form(None),
@@ -1017,17 +1065,33 @@ async def device_heartbeat(
 ):
     now = datetime.utcnow()
 
-    device = db.query(Device).filter(
-        Device.userId == user.userId,
-        Device.device_name == device_name
-    ).first()
+    # Resolve device record prioritising device_uuid when supplied
+    device = None
+    if device_id:
+        device = db.query(Device).filter(
+            Device.userId == user.userId,
+            Device.device_uuid == device_id
+        ).first()
+
+    if not device and device_name:
+        device = db.query(Device).filter(
+            Device.userId == user.userId,
+            Device.device_name == device_name
+        ).first()
 
     # Create the device entry on first heartbeat if it was not registered
     if not device:
+        # Fallback defaults
+        if not device_name:
+            device_name = f"device_{device_id[:6] if device_id else uuid.uuid4().hex[:6]}"
+        if not device_type:
+            device_type = "unknown_type"
+
         device = Device(
             userId=user.userId,
             device_name=device_name,
-            device_type=device_type
+            device_type=device_type,
+            device_uuid=device_id,
         )
         db.add(device)
         db.commit()
@@ -1091,29 +1155,44 @@ async def device_heartbeat(
     return {
         "message": "Device heartbeat received and state updated",
         "deviceId": device.deviceId,
+        "device_uuid": device.device_uuid,
         "last_seen": device.last_seen.isoformat()
     }
 
 
 @router.post("/device/logout")
 async def device_logout(
-    device_name: str = Form(...),
+    device_id: str = Form(None),
+    device_name: str = Form(None),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    device = db.query(Device).filter(
-        Device.userId == user.userId,
-        Device.device_name == device_name
-    ).first()
+    # Resolve device record prioritising device_uuid when supplied
+    device = None
+    if device_id:
+        device = db.query(Device).filter(
+            Device.userId == user.userId,
+            Device.device_uuid == device_id
+        ).first()
+
+    if not device and device_name:
+        device = db.query(Device).filter(
+            Device.userId == user.userId,
+            Device.device_name == device_name
+        ).first()
 
     if device:
         # Mark device as offline by moving last_seen outside the online threshold
         offline_time = datetime.utcnow() - timedelta(minutes=10)
         device.last_seen = offline_time
-        logger.info(f"[device_logout] Marked device '{device_name}' as offline at {offline_time.isoformat()}")
+        logger.info(f"[device_logout] Marked device '{device.device_name}' as offline at {offline_time.isoformat()}")
         db.commit()
 
-    return {"status": "logged out", "deviceId": device.deviceId if device else None}
+    return {
+        "status": "logged out",
+        "deviceId": device.deviceId if device else None,
+        "device_uuid": device.device_uuid if device else None,
+    }
 
 
 @router.get("/devices")

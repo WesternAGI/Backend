@@ -168,6 +168,8 @@ class Device(Base):
 
     deviceId = Column("device_id", Integer, primary_key=True, autoincrement=True, index=True)
     userId = Column("user_id", Integer, ForeignKey("user_account.user_id"), nullable=False)
+    # Stable, client-provided identifier, e.g. IOPlatformUUID (mac) or extension ID (chrome)
+    device_uuid = Column("device_uuid", String, unique=True, nullable=True)
     device_name = Column("device_name", String, nullable=False)
     device_type = Column("device_type", String, nullable=False)
     last_seen = Column("last_seen", DateTime, default=datetime.utcnow)
