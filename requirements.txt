@@ -15,8 +15,6 @@ pytesseract
 psutil
 Flask
 apscheduler
-twilio
 # openai-whisper
 # torch
 loguru
-mimetypes
