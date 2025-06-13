@@ -372,31 +372,88 @@ def delete_user(username: str, current_user: User = Depends(get_current_user), d
         raise HTTPException(status_code=500, detail=f"Error deleting user: {str(e)}")
 
 @router.post("/token")
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: SessionLocal = Depends(get_db)):
-    """Authenticate user and generate access token.
-    
-    This endpoint conforms to the OAuth2 password flow standard.
-    
-    Args:
-        form_data: OAuth2 form containing username and password
-        db: Database session dependency
-        
-    Returns:
-        dict: JWT access token and token type
-        
-    Raises:
-        HTTPException: 401 if authentication fails
+async def login(request: Request, db: SessionLocal = Depends(get_db)):
+    """Authenticate a user, register the calling device and bootstrap a
+    `<device_id>.json` tracking file that will be kept in-sync by the
+    `/device/heartbeat` endpoint.
+
+    The request **MUST** be sent as a regular OAuth2 password flow form but can
+    optionally include the following extra form fields so we can properly
+    identify the client device:
+    - `device_name`: Human readable name (e.g. "John's MacBook")
+    - `device_type`: One of `mac_app`, `chrome_extension`, *etc.*
     """
-    user = authenticate_user(db, form_data.username, form_data.password)
+    # Parse the oauth2 form manually so that we can grab the extra fields
+    form = await request.form()
+    username: str = form.get("username")
+    password: str = form.get("password")
+    device_name: str = form.get("device_name") or "unknown_device"
+    device_type: str = form.get("device_type") or "unknown_type"
+
+    user = authenticate_user(db, username, password)
     if not user:
         raise HTTPException(status_code=400, detail="Invalid credentials")
+
+    # ------------------------------------------------------------------
+    # Register / update the device that is requesting the token
+    # ------------------------------------------------------------------
+    device = db.query(Device).filter(
+        Device.userId == user.userId,
+        Device.device_name == device_name
+    ).first()
+
+    if not device:
+        device = Device(
+            userId=user.userId,
+            device_name=device_name,
+            device_type=device_type
+        )
+        db.add(device)
+        db.commit()
+        db.refresh(device)
+
+    # ------------------------------------------------------------------
+    # Create an initial per-device tracking file (<device_id>.json)
+    # ------------------------------------------------------------------
+    filename = f"{device.deviceId}.json"
+    initial_payload = {
+        "deviceId": device.deviceId,
+        "device_name": device_name,
+        "device_type": device_type,
+        "events": []
+    }
+    payload_bytes = json.dumps(initial_payload).encode("utf-8")
+    file_entry = db.query(DBFile).filter(
+        DBFile.userId == user.userId,
+        DBFile.filename == filename
+    ).first()
+
+    if not file_entry:
+        new_file = DBFile(
+            filename=filename,
+            userId=user.userId,
+            size=len(payload_bytes),
+            content=payload_bytes,
+            file_hash=compute_sha256(payload_bytes),
+            content_type="application/json",
+            uploaded_at=datetime.utcnow()
+        )
+        db.add(new_file)
+        db.commit()
+
+    # ------------------------------------------------------------------
+    # Generate the access token and respond
+    # ------------------------------------------------------------------
     access_token = create_access_token(
         data={"sub": user.username},
         expires_delta=ACCESS_TOKEN_EXPIRE_MINUTES
     )
-    return {"access_token": access_token, "token_type": "bearer"}
 
-
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "deviceId": device.deviceId
+    }
 
 @router.post("/upload")
 async def upload_file(
@@ -457,8 +514,6 @@ async def upload_file(
         db.rollback()
         log_error(f"Upload failed: {e}", e, endpoint="/upload")
         raise HTTPException(status_code=500, detail="Upload failed")
-
-
 
 @router.post("/query")
 async def queryEndpoint(request: Request, user: User = Depends(get_current_user), db: SessionLocal = Depends(get_db)):
@@ -967,6 +1022,7 @@ async def device_heartbeat(
         Device.device_name == device_name
     ).first()
 
+    # Create the device entry on first heartbeat if it was not registered
     if not device:
         device = Device(
             userId=user.userId,
@@ -977,11 +1033,63 @@ async def device_heartbeat(
         db.commit()
         db.refresh(device)
 
+    # Update the last-seen timestamp
     device.last_seen = now
     db.commit()
 
+    # ------------------------------------------------------------------
+    # Persist foreground context to the <device_id>.json file
+    # ------------------------------------------------------------------
+    filename = f"{device.deviceId}.json"
+    file_entry = db.query(DBFile).filter(
+        DBFile.userId == user.userId,
+        DBFile.filename == filename
+    ).first()
+
+    if file_entry and file_entry.content:
+        try:
+            data = json.loads(file_entry.content.decode("utf-8"))
+        except Exception:
+            data = {"events": []}
+    else:
+        data = {
+            "deviceId": device.deviceId,
+            "device_name": device_name,
+            "device_type": device_type,
+            "events": []
+        }
+
+    # Append the current foreground information as a new event
+    data.setdefault("events", []).append({
+        "timestamp": now.isoformat(),
+        "current_app": current_app,
+        "current_page": current_page,
+        "current_url": current_url
+    })
+
+    updated_bytes = json.dumps(data).encode("utf-8")
+
+    if file_entry:
+        file_entry.content = updated_bytes
+        file_entry.size = len(updated_bytes)
+        file_entry.file_hash = compute_sha256(updated_bytes)
+        file_entry.uploaded_at = now
+    else:
+        new_file = DBFile(
+            filename=filename,
+            userId=user.userId,
+            size=len(updated_bytes),
+            content=updated_bytes,
+            file_hash=compute_sha256(updated_bytes),
+            content_type="application/json",
+            uploaded_at=now
+        )
+        db.add(new_file)
+
+    db.commit()
+
     return {
-        "message": "Device heartbeat received",
+        "message": "Device heartbeat received and state updated",
         "deviceId": device.deviceId,
         "last_seen": device.last_seen.isoformat()
     }
