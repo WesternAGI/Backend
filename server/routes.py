@@ -1005,6 +1005,34 @@ async def device_logout(
     return {"status": "logged out", "deviceId": device.deviceId if device else None}
 
 
+@router.get("/devices")
+async def list_devices(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """List all devices registered for the authenticated user.
+
+    A device is considered **online** if its `last_seen` timestamp is within
+    the last five minutes. Otherwise, it's treated as offline.
+    """
+    try:
+        threshold = datetime.utcnow() - timedelta(minutes=5)
+        devices = db.query(Device).filter(Device.userId == user.userId).all()
+
+        device_list = []
+        for device in devices:
+            online = bool(device.last_seen and device.last_seen > threshold)
+            device_list.append({
+                "deviceId": device.deviceId,
+                "name": device.device_name,
+                "type": device.device_type,
+                "last_seen": device.last_seen.isoformat() if device.last_seen else None,
+                "online": online,
+            })
+
+        return {"devices": device_list, "count": len(device_list)}
+
+    except Exception as e:
+        log_error(f"Error listing devices: {str(e)}", exc=e, endpoint="/devices")
+        raise HTTPException(status_code=500, detail="Error listing devices")
+
 
 # --- Twilio Webhook Endpoints ---
 
