@@ -644,6 +644,27 @@ async def queryEndpoint(request: Request, user: User = Depends(get_current_user)
         long_term_memory = LongTermMemoryManager(memory_content=longterm_memory_data)
         short_term_memory = ShortTermMemoryManager(memory_content=shortterm_memory_data)
 
+        # Include user markdown notes in the query context
+        try:
+            notes_files = (
+                db.query(DBFile)
+                .filter(DBFile.userId == user.userId, DBFile.filename.ilike('%.md'))
+                .limit(50)
+                .all()
+            )
+            notes_parts = []
+            for nf in notes_files:
+                try:
+                    note_text = (nf.content or b'').decode('utf-8', errors='ignore')
+                except Exception:
+                    note_text = ''
+                notes_parts.append(f"{nf.filename}_{note_text}")
+            if notes_parts:
+                concatenated_notes = "_".join(notes_parts)
+                user_query += "\n\nthese are the notes of the user:" + concatenated_notes
+        except Exception as e:
+            logger.error(f"Error loading user notes for query: {e}")
+
         # Call your AI agent with try/except to handle Vercel environment limitations
         try:
             from aiagent.handler.query import query_openai
