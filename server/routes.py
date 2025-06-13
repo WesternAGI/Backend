@@ -999,7 +999,10 @@ async def device_logout(
     ).first()
 
     if device:
-        device.last_seen = datetime.utcnow()
+        # Mark device as offline by moving last_seen outside the online threshold
+        offline_time = datetime.utcnow() - timedelta(minutes=10)
+        device.last_seen = offline_time
+        logger.info(f"[device_logout] Marked device '{device_name}' as offline at {offline_time.isoformat()}")
         db.commit()
 
     return {"status": "logged out", "deviceId": device.deviceId if device else None}
