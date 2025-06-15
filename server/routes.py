@@ -32,6 +32,7 @@ from fastapi import (
     Body,
     Header
 )
+from fastapi import UploadFile
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import JSONResponse, FileResponse, Response, StreamingResponse
 from fastapi.encoders import jsonable_encoder

@@ -109,5 +109,8 @@ __all__ = [
     'CallRequest',
     'CallResponse',
     'TranscriptionStatus',
-    'TranscriptionResponse'
+    'TranscriptionResponse',
+    
+    # Health
+    'HealthCheckResponse'
 ]
