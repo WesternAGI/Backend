@@ -72,7 +72,7 @@ def get_status_message() -> str:
         db.close()
 
 
-def update_status():
+def update_device_timestamps():
     """Update the last seen timestamp of all devices."""
     db = SessionLocal()
     try:
@@ -99,7 +99,7 @@ def send_status():
         else:
             log_something(f"[send_status] SMS sent to {recipient_phone} at {current_time}")
     except Exception as e:
-        log_error(f"[send_status] Error sending SMS: {e}")
+        log_error(f"[send_status] Error: {e}")
 
 
 def auto_disconnect_stale_devices():
@@ -134,10 +134,10 @@ def start_scheduler():
         
         # Add jobs
         scheduler.add_job(
-            update_status,
+            update_device_timestamps,
             trigger=IntervalTrigger(minutes=1),
-            id='update_status_job',
-            name='Update status every minute',
+            id='update_device_timestamps_job',
+            name='Update device timestamps every minute',
             replace_existing=True
         )
         
