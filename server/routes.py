@@ -29,11 +29,11 @@ from server.utils.logging_utils import (
     log_request_start, 
     log_response,
     log_error,
-    log_info,
-    log_warning,
+    log_something,
     log_ai_call,
     log_ai_response,
-    log_request_payload
+    log_request_payload,
+    logger
 )
 
 # AI Components
