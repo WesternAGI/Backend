@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     TWILIO_PHONE_NUMBER: str = os.getenv("TWILIO_PHONE_NUMBER")
     
     # CORS
-    CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS").split(",")
+    CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "*").split(",")
     
     class Config:
         case_sensitive = True
