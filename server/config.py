@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # Twilio (optional)
     TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID", "")
     TWILIO_AUTH_TOKEN: str = os.getenv("TWILIO_AUTH_TOKEN", "")
-    TWILIO_PHONE_NUMBER: str = os.getenv("TWILIO_PHONE_NUMBER")
+    TWILIO_PHONE_NUMBER: str = os.getenv("TWILIO_PHONE_NUMBER", "")
     
     # CORS
     CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "*").split(",")
