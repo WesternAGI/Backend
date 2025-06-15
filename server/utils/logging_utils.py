@@ -180,4 +180,30 @@ def log_something(something: Any, endpoint: str) -> None:
         something: The thing to log
         endpoint: The API endpoint where this is being logged from
     """
-    logger.info("Log from %s: %s", endpoint, something)
+    logger.info("[MISC] %s - %s: %s", endpoint, type(something).__name__, str(something)[:200])
+
+def log_file_operation(operation: str, file_path: str, success: bool, 
+                     details: Optional[Dict[str, Any]] = None, 
+                     endpoint: Optional[str] = None) -> None:
+    """Log file operations with details.
+    
+    Args:
+        operation: Type of file operation (e.g., 'read', 'write', 'delete')
+        file_path: Path to the file being operated on
+        success: Whether the operation was successful
+        details: Additional details about the operation
+        endpoint: Optional API endpoint where the operation was initiated
+    """
+    status = "succeeded" if success else "failed"
+    log_msg = f"[FILE] Operation '{operation}' {status} for file: {file_path}"
+    
+    if endpoint:
+        log_msg = f"[{endpoint}] {log_msg}"
+    
+    if details:
+        log_msg = f"{log_msg} - Details: {details}"
+    
+    if success:
+        logger.info(log_msg)
+    else:
+        logger.error(log_msg)

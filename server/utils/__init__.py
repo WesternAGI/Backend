@@ -33,4 +33,7 @@ __all__ = [
     'log_ai_call',
     'log_ai_response',
     'log_something',
+    'log_file_operation',
+    'log_server_lifecycle',
+    'log_server_health'
 ]
