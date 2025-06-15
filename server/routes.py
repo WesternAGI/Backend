@@ -1250,9 +1250,12 @@ async def handle_twilio_incoming_message(
     
     # If we get here, we have a valid user and query text
     try:
+        # Generate a chat ID for SMS conversations
+        chat_id = f"sms_{found_user.userId}_{int(datetime.utcnow().timestamp())}"
+        
         # Create a new query record in the database
         db_query = Query(
-            userId=user.userId,
+            userId=found_user.userId,
             chatId=chat_id,
             query_text=user_query_text
         )
