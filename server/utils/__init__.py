@@ -3,6 +3,7 @@ Utility functions and helpers for the backend application.
 
 This package contains various utility modules:
 - logging_utils.py: Logging configuration and helper functions
+- crypto_utils.py: Cryptographic helper functions
 - Other utility modules can be added here
 """
 
@@ -22,6 +23,8 @@ from .logging_utils import (
     log_file_operation
 )
 
+from .crypto_utils import compute_sha256
+
 # Export the main utility functions
 __all__ = [
     'logger',
@@ -35,5 +38,6 @@ __all__ = [
     'log_something',
     'log_file_operation',
     'log_server_lifecycle',
-    'log_server_health'
+    'log_server_health',
+    'compute_sha256'
 ]
