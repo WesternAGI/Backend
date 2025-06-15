@@ -1252,58 +1252,116 @@ async def handle_twilio_incoming_message(
     try:
         # Generate a chat ID for SMS conversations
         chat_id = f"sms_{found_user.userId}_{int(datetime.utcnow().timestamp())}"
+        logger.info(f"[{endpoint_name}] Generated chat_id: {chat_id}")
         
-        # Create a new query record in the database
-        db_query = Query(
-            userId=found_user.userId,
-            chatId=chat_id,
-            query_text=user_query_text
-        )
-        db.add(db_query)
-        db.commit()
-        db.refresh(db_query)
-        log_ai_call(user_query_text, "default_sms_model", endpoint_name)
+        try:
+            # Create a new query record in the database
+            logger.info(f"[{endpoint_name}] Creating new query record in database")
+            db_query = Query(
+                userId=found_user.userId,
+                chatId=chat_id,
+                query_text=user_query_text
+            )
+            db.add(db_query)
+            db.commit()
+            db.refresh(db_query)
+            logger.info(f"[{endpoint_name}] Successfully created query with ID: {db_query.queryId}")
+            log_ai_call(user_query_text, "default_sms_model", endpoint_name)
+        except Exception as e:
+            logger.error(f"[{endpoint_name}] Error creating query record: {str(e)}", exc_info=True)
+            raise
 
-        # Retrieve memory files
-        shortterm_file_db = db.query(DBFile).filter(
-            DBFile.userId == user.userId, DBFile.filename == "short_term_memory.json"
-        ).first()
-        longterm_file_db = db.query(DBFile).filter(
-            DBFile.userId == user.userId, DBFile.filename == "long_term_memory.json"
-        ).first()
+        # Initialize memory managers with default content if files don't exist
+        logger.info(f"[{endpoint_name}] Initializing memory managers")
+        short_term_memory = ShortTermMemoryManager()
+        long_term_memory = LongTermMemoryManager()
+        
+        # Try to load existing memory files if they exist
+        try:
+            logger.info(f"[{endpoint_name}] Attempting to load memory files for user {found_user.userId}")
+            
+            shortterm_file_db = db.query(DBFile).filter(
+                DBFile.userId == found_user.userId, 
+                DBFile.filename == "short_term_memory.json"
+            ).first()
+            logger.debug(f"[{endpoint_name}] Short-term memory file found: {shortterm_file_db is not None}")
+            
+            longterm_file_db = db.query(DBFile).filter(
+                DBFile.userId == found_user.userId, 
+                DBFile.filename == "long_term_memory.json"
+            ).first()
+            logger.debug(f"[{endpoint_name}] Long-term memory file found: {longterm_file_db is not None}")
+            
+            if shortterm_file_db and shortterm_file_db.content:
+                logger.debug(f"[{endpoint_name}] Loading short-term memory content")
+                shortterm_content = json.loads(shortterm_file_db.content.decode('utf-8'))
+                short_term_memory = ShortTermMemoryManager(memory_content=shortterm_content)
+                logger.info(f"[{endpoint_name}] Successfully loaded short-term memory")
+            else:
+                logger.info(f"[{endpoint_name}] No short-term memory content found, using default")
+                
+            if longterm_file_db and longterm_file_db.content:
+                logger.debug(f"[{endpoint_name}] Loading long-term memory content")
+                longterm_content = json.loads(longterm_file_db.content.decode('utf-8'))
+                long_term_memory = LongTermMemoryManager(memory_content=longterm_content)
+                logger.info(f"[{endpoint_name}] Successfully loaded long-term memory")
+            else:
+                logger.info(f"[{endpoint_name}] No long-term memory content found, using default")
+                
+        except json.JSONDecodeError as je:
+            logger.error(f"[{endpoint_name}] JSON decode error in memory files: {str(je)}", exc_info=True)
+            logger.error(f"[{endpoint_name}] Short-term content (truncated): {str(shortterm_file_db.content)[:200] if shortterm_file_db and shortterm_file_db.content else 'None'}")
+            logger.error(f"[{endpoint_name}] Long-term content (truncated): {str(longterm_file_db.content)[:200] if longterm_file_db and longterm_file_db.content else 'None'}")
+        except Exception as e:
+            logger.error(f"[{endpoint_name}] Error loading memory files: {str(e)}", exc_info=True)
+            logger.error(f"[{endpoint_name}] Error type: {type(e).__name__}")
+            logger.error(f"[{endpoint_name}] Error args: {e.args}")
 
-        shortterm_content = json.loads(shortterm_file_db.content.decode('utf-8')) if shortterm_file_db and shortterm_file_db.content else {}
-        longterm_content = json.loads(longterm_file_db.content.decode('utf-8')) if longterm_file_db and longterm_file_db.content else {}
-
-        short_term_memory = ShortTermMemoryManager(memory_content=shortterm_content)
-        long_term_memory = LongTermMemoryManager(memory_content=longterm_content)
-
-        aux_data = {
-            "username": user.username,
-            "user_id": user.userId,
-            "chat_id": chat_id,
-            "query_id": db_query.queryId,
-            "client_info": {
-                "max_tokens": 1024,
-                "temperature": 0.7
+        try:
+            aux_data = {
+                "username": found_user.username,
+                "user_id": found_user.userId,
+                "chat_id": chat_id,
+                "query_id": db_query.queryId,
+                "client_info": {
+                    "max_tokens": 1024,
+                    "temperature": 0.7
+                }
             }
-        }
+            logger.info(f"[{endpoint_name}] Created aux_data: {json.dumps(aux_data, default=str)}")
+        except Exception as e:
+            logger.error(f"[{endpoint_name}] Error creating aux_data: {str(e)}", exc_info=True)
+            raise
         
         # references = read_references()
 
-        ai_response = ai_query_handler.query_openai(
-            query=user_query_text,
-            long_term_memory=long_term_memory,
-            short_term_memory=short_term_memory,
-            aux_data=aux_data,
-            max_tokens=aux_data["client_info"]["max_tokens"],
-            temperature=aux_data["client_info"]["temperature"],
-            # references=references,
-        )
-        log_ai_response(ai_response, endpoint_name)
+        try:
+            logger.info(f"[{endpoint_name}] Calling AI query handler with query: {user_query_text}")
+            ai_response = ai_query_handler.query_openai(
+                query=user_query_text,
+                long_term_memory=long_term_memory,
+                short_term_memory=short_term_memory,
+                aux_data=aux_data,
+                max_tokens=aux_data["client_info"]["max_tokens"],
+                temperature=aux_data["client_info"]["temperature"],
+                # references=references,
+            )
+            logger.info(f"[{endpoint_name}] Successfully received AI response")
+            log_ai_response(ai_response, endpoint_name)
+        except Exception as e:
+            logger.error(f"[{endpoint_name}] Error in AI query handler: {str(e)}", exc_info=True)
+            logger.error(f"[{endpoint_name}] Error type: {type(e).__name__}")
+            logger.error(f"[{endpoint_name}] Error args: {e.args}")
+            raise
 
-        db_query.response = ai_response # Store AI response
-        db.commit()
+        try:
+            db_query.response = ai_response # Store AI response
+            db.commit()
+            logger.info(f"[{endpoint_name}] Successfully updated query with AI response")
+        except Exception as e:
+            logger.error(f"[{endpoint_name}] Error updating query with response: {str(e)}", exc_info=True)
+            db.rollback()
+            raise
 
         if not ai_response.startswith("Error:"):
             summary = ai_query_handler.summarize_conversation(user_query_text, ai_response)
