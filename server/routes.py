@@ -17,6 +17,9 @@ import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Union
 
+# Local imports
+from server.utils.logging_utils import log_request_start
+
 # FastAPI
 
 from fastapi import (
