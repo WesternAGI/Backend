@@ -6,6 +6,7 @@ This package contains schemas organized by domain:
 - ai.py: AI and chat-related schemas
 - files.py: File and device management schemas
 - twilio.py: Twilio integration schemas
+- health.py: Health check related schemas
 """
 
 # Re-export commonly used models for easier imports
@@ -59,6 +60,8 @@ from .twilio import (
     TranscriptionStatus,
     TranscriptionResponse
 )
+
+from .health import HealthCheckResponse
 
 __all__ = [
     # Auth

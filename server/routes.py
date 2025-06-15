@@ -52,6 +52,7 @@ from .auth import (
 )
 
 # Import schemas
+from .schemas.health import HealthCheckResponse
 from .schemas import (
     RegisterRequest, 
     RegisterResponse, 
@@ -61,7 +62,6 @@ from .schemas import (
     FileUploadResponse,
     QueryRequest,
     QueryResponse,
-    HealthCheckResponse,
     DeviceHeartbeatRequest,
     DeviceInfo,
     DeviceListResponse,
@@ -98,11 +98,6 @@ services.start_scheduler()
 # API Endpoints
 # ===========================================
 
-class HealthCheckResponse(BaseModel):
-    """Health check response model."""
-    status: str = Field(..., example="ok")
-    timestamp: str = Field(..., example="2023-01-01T12:00:00Z")
-    version: str = Field(..., example="1.0.0")
 
 
 @router.get(
@@ -113,19 +108,19 @@ class HealthCheckResponse(BaseModel):
     description="Check if the API is running and healthy.",
     tags=["system"]
 )
-async def health_check() -> Dict[str, str]:
+async def health_check() -> HealthCheckResponse:
     """Check the health status of the API.
     
     This endpoint performs a basic health check of the API and its dependencies.
     
     Returns:
-        Dict[str, str]: A dictionary containing the status, timestamp, and version.
+        HealthCheckResponse: The health check response containing status, timestamp, and version.
     """
-    return {
-        "status": "ok",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-        "version": "1.0.0"
-    }
+    return HealthCheckResponse(
+        status="ok",
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        version="1.0.0"
+    )
 
 
 @router.post(
