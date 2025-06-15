@@ -29,7 +29,7 @@ class FileUploadResponse(BaseModel):
                                       description="MIME type of the file")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "message": "File uploaded successfully",
                 "file_id": 123,

@@ -12,6 +12,7 @@ All endpoints are protected with JWT authentication unless explicitly marked as 
 """
 
 import os
+import re
 import logging
 import json
 from datetime import datetime, timedelta

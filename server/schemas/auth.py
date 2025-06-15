@@ -13,7 +13,7 @@ class RegisterRequest(BaseModel):
     full_name: Optional[str] = Field(None, example="John Doe")
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "username": "johndoe",
                 "password": "securepassword123",
@@ -55,7 +55,7 @@ class UserResponse(BaseModel):
     updated_at: Optional[datetime] = Field(None, example="2023-01-01T12:00:00Z")
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 class RegisterResponse(BaseModel):

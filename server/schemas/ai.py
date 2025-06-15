@@ -16,7 +16,7 @@ class QueryRequest(BaseModel):
                                      description="Maximum number of tokens to generate")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "query": "What is the capital of France?",
                 "chat_id": "chat_abc123",
@@ -38,7 +38,7 @@ class QueryResponse(BaseModel):
                       description="The AI model used for generation")
     
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "response": "The capital of France is Paris.",
                 "chat_id": "chat_abc123",
