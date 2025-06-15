@@ -1,10 +1,23 @@
-"""Logging utilities for the backend application."""
+"""
+Logging Utilities Module
+
+This module provides specialized logging functions to standardize
+and enhance the logging across the entire server application.
+"""
 
 import logging
-from typing import Optional, Dict, Any
+import os
+import sys
+import platform
+import psutil
+import json
+import traceback
+from datetime import datetime
+from typing import Optional, Dict, Any, Union
+from flask import request
 
 # Set up logger
-logger = logging.getLogger("lms.server")
+logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # Create console handler with a higher log level
@@ -18,47 +31,87 @@ ch.setFormatter(formatter)
 # Add the handler to the logger
 logger.addHandler(ch)
 
-
-def log_request_start(endpoint: str, method: str, headers: Dict[str, str], client_host: str) -> None:
-    """Log the start of an incoming request.
+def log_server_lifecycle(event: str, details: Optional[Dict] = None) -> None:
+    """Log server lifecycle events with detailed information.
     
     Args:
-        endpoint: The API endpoint being called
-        method: HTTP method (GET, POST, etc.)
-        headers: Request headers
-        client_host: Client IP address
+        event (str): The lifecycle event (startup, shutdown, etc.)
+        details (dict, optional): Additional details about the event
     """
+    logger.info(f"[SERVER] Lifecycle event: {event}")
+    logger.info(f"[SERVER] Timestamp: {datetime.now().isoformat()}")
+    if details:
+        logger.info(f"[SERVER] Event details: {details}")
+
+def log_server_health() -> None:
+    """Log server health metrics including CPU, memory, and threads."""
+    process = psutil.Process()
+    logger.info(f"[SERVER] CPU usage: {psutil.cpu_percent()}%")
+    logger.info(f"[SERVER] Memory usage: {process.memory_info().rss / 1024 / 1024:.2f} MB")
+    logger.info(f"[SERVER] Thread count: {process.num_threads()}")
+    logger.info(f"[SERVER] Process start time: {datetime.fromtimestamp(process.create_time()).isoformat()}")
+    logger.info(f"[SERVER] System uptime: {datetime.fromtimestamp(psutil.boot_time()).isoformat()}")
+
+def log_request_start(endpoint: str, method: Optional[str] = None, 
+                    headers: Optional[Dict] = None, remote_addr: Optional[str] = None) -> None:
+    """Log the start of a request with detailed information.
+    
+    Args:
+        endpoint (str): The API endpoint being accessed
+        method (str, optional): The HTTP method used
+        headers (dict, optional): The request headers
+        remote_addr (str, optional): The client's IP address
+    """
+    method = method or request.method if request else 'UNKNOWN'
+    remote_addr = remote_addr or (request.remote_addr if request else 'unknown')
+    headers = headers or (dict(request.headers) if request else {})
+    
     logger.info(
-        "Request started: %s %s from %s\nHeaders: %s",
-        method, endpoint, client_host, headers
+        "[REQUEST] %s %s from %s\nHeaders: %s",
+        method,
+        endpoint,
+        remote_addr,
+        {k: v for k, v in headers.items() if k.lower() not in ['authorization', 'cookie']}
     )
 
-
 def log_request_payload(payload: Any, endpoint: str) -> None:
-    """Log the payload of a request.
+    """Log details about the request payload.
     
     Args:
-        payload: The request payload (usually a dict)
-        endpoint: The API endpoint being called
+        payload: The request payload
+        endpoint: The API endpoint being accessed
     """
-    logger.debug("Request payload for %s: %s", endpoint, payload)
-
+    if payload:
+        try:
+            # Safely convert payload to string, handling non-serializable objects
+            if hasattr(payload, 'dict'):
+                payload_str = str(payload.dict())
+            elif isinstance(payload, (str, bytes)):
+                payload_str = str(payload)[:500]  # Truncate long strings
+            else:
+                payload_str = str(payload)[:500]
+                
+            logger.debug("[PAYLOAD] %s: %s", endpoint, payload_str)
+        except Exception as e:
+            logger.warning("[PAYLOAD] Failed to log payload for %s: %s", endpoint, str(e))
 
 def log_validation(field: str, value: Any, valid: bool, endpoint: str) -> None:
     """Log field validation results.
     
     Args:
-        field: Name of the field being validated
-        value: The field value
-        valid: Whether validation passed
-        endpoint: The API endpoint being called
+        field (str): The field being validated
+        value (any): The value being validated (will be truncated if string)
+        valid (bool): Whether validation passed
+        endpoint (str): The API endpoint being accessed
     """
-    if not valid:
-        logger.warning(
-            "Validation failed for field '%s' with value '%s' in endpoint %s",
-            field, value, endpoint
-        )
-
+    value_str = str(value)
+    if len(value_str) > 100:  # Truncate long values
+        value_str = value_str[:100] + "..."
+    
+    if valid:
+        logger.debug("[VALID] %s: %s is valid", field, value_str)
+    else:
+        logger.warning("[VALID] %s: %s is invalid", field, value_str)
 
 def log_error(msg: str, exc: Optional[Exception] = None, context: Optional[Dict] = None, 
               endpoint: Optional[str] = None) -> None:

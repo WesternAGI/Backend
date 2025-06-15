@@ -9,6 +9,8 @@ This package contains various utility modules:
 # Make logging utilities available at the package level
 from .logging_utils import (
     logger,
+    log_server_lifecycle,
+    log_server_health,
     log_request_start,
     log_request_payload,
     log_validation,
@@ -16,7 +18,8 @@ from .logging_utils import (
     log_response,
     log_ai_call,
     log_ai_response,
-    log_something
+    log_something,
+    log_file_operation
 )
 
 # Export the main utility functions
