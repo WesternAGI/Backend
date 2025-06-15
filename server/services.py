@@ -29,7 +29,7 @@ from twilio.base.exceptions import TwilioRestException
 from .db import SessionLocal, Device, User, File as DBFile, Query, Session
 from .config import settings
 from .utils import compute_sha256, log_something, log_error
-from .auth import get_password_hash, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
+from .auth import get_password_hash, create_access_token
 
 # AI Agent imports
 from aiagent.handler import query as ai_query_handler

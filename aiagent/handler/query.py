@@ -4,7 +4,7 @@
 AI Core Module
 
 This module handles the core AI functionality, including:
-- Communication with the GROK API
+- Communication with the OPENAI API
 - Query generation with context
 - Response processing
 """
@@ -44,7 +44,7 @@ def query_openai(
     references: Dict[str, str] = {},
     aux_data: Optional[Dict[str, Any]] = None
 ) -> str:
-    """Send a query to GROK's grok-3-mini with context.
+    """Send a query to OPENAI's model with context.
 
     Includes context from:
     - User profile and preferences stored in long_term_memory.json (if provided).
@@ -63,9 +63,9 @@ def query_openai(
     """
     try:
         # Initialize OpenAI client
-        client = OpenAI(api_key=os.getenv("GROK_API_KEY"), base_url="https://api.x.ai/v1")
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         if not client.api_key:
-            return "Error: No GROK API key found. Set GROK_API_KEY in .env"
+            return "Error: No OpenAI API key found. Set OPENAI_API_KEY in .env"
 
         # Build context messages from long-term memory
         messages = []
@@ -105,10 +105,10 @@ def query_openai(
 
         #logging.info(f"Context messages: {messages}")
         
-        # Query GROK
-        #logging.info("Sending query to GROK")
+        # Query OPENAI
+        #logging.info("Sending query to OPENAI")
         response = client.chat.completions.create(
-            model="grok-3-mini",
+            model="gpt-4.1-nano-2025-04-14",
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -121,21 +121,21 @@ def query_openai(
             finish_reason = response.choices[0].finish_reason
 
             if ai_content is not None:
-                #logging.info("Received response content from GROK.")
+                #logging.info("Received response content from OPENAI.")
                 return ai_content
             else:
                 # Content is None, log finish_reason and the message object
                 logging.error(
-                    f"GROK response error: Message content is None. Finish reason: '{finish_reason}'. Message: {response.choices[0].message.model_dump_json()}"
+                    f"OPENAI response error: Message content is None. Finish reason: '{finish_reason}'. Message: {response.choices[0].message.model_dump_json()}"
                 )
-                return f"Error querying AI: GROK response message content is None. Finish reason: {finish_reason}."
+                return f"Error querying AI: OPENAI response message content is None. Finish reason: {finish_reason}."
         else:
             # Message object itself is None or no choices
-            #logging.error(f"GROK response error: No choices or message object found. Full response: {response.model_dump_json()}")
-            return "Error querying AI: No choices or message object returned from GROK."
+            #logging.error(f"OPENAI response error: No choices or message object found. Full response: {response.model_dump_json()}")
+            return "Error querying AI: No choices or message object returned from OPENAI."
 
     except Exception as e:
-        #logging.error(f"Error querying GROK: {e}", exc_info=True)
+        #logging.error(f"Error querying OPENAI: {e}", exc_info=True)
         return f"Error querying AI: {str(e)}"
 
 
@@ -153,16 +153,16 @@ def summarize_conversation(query: str, response: str) -> str:
     """
     # Initialize client and check API key here
     try:
-        api_key = os.environ.get("GROK_API_KEY")
+        api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
             logging.error(
-                "GROK API key not found. Please set the GROK_API_KEY environment variable."
+                "OPENAI API key not found. Please set the OPENAI_API_KEY environment variable."
             )
-            return "Summary not available - GROK API key not found."
-        client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
+            return "Summary not available - OPENAI API key not found."
+        client = OpenAI(api_key=api_key)
     except Exception as e:
-        #logging.exception(f"Failed to initialize GROK client: {e}")
-        return f"Summary not available - Failed to initialize GROK client: {e}"
+        #logging.exception(f"Failed to initialize OPENAI client: {e}")
+        return f"Summary not available - Failed to initialize OPENAI client: {e}"
 
     try:
         # Create a prompt to summarize the conversation
@@ -175,7 +175,7 @@ def summarize_conversation(query: str, response: str) -> str:
 
         # Make the API call with a low max_tokens to ensure brevity
         completion = client.chat.completions.create(
-            model="grok-3-mini",
+            model="gpt-4.1-nano-2025-04-14", 
             messages=[
                 {"role": "system", "content": "You are a personal assistant. The user is asking you a question. Answer briefly and concisely. If one sentence is enough, answer with one sentence. "},
                 {"role": "user", "content": summary_prompt}, 
@@ -202,16 +202,16 @@ def update_memory(query: str, response: str, memory: BaseMemoryManager):
     # Initialize client and check API key here
     
     try:
-        api_key = os.environ.get("GROK_API_KEY")
+        api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
             logging.error(
-                "GROK API key not found. Please set the GROK_API_KEY environment variable."
+                "OPENAI API key not found. Please set the OPENAI_API_KEY environment variable."
             )
-            return "Summary not available - GROK API key not found."
-        client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
+            return "Summary not available - OPENAI API key not found."
+        client = OpenAI(api_key=api_key)
     except Exception as e:
-        #logging.exception(f"Failed to initialize GROK client: {e}")
-        return f"Summary not available - Failed to initialize GROK client: {e}"
+        #logging.exception(f"Failed to initialize OPENAI client: {e}")
+        return f"Summary not available - Failed to initialize OPENAI client: {e}"
     try:
         updated = False 
         # Create a prompt to summarize the conversation
@@ -230,7 +230,7 @@ def update_memory(query: str, response: str, memory: BaseMemoryManager):
 
         # Make the API call with a low max_tokens to ensure brevity
         completion = client.chat.completions.create(
-            model="grok-3-mini",
+            model="gpt-4.1-nano-2025-04-14",
             messages=[
                 {"role": "system", "content": "You are a personal assistant. The user is asking you a question. Answer briefly and concisely. If one sentence is enough, answer with one sentence. "},
                 {"role": "user", "content": summary_prompt},
@@ -342,22 +342,3 @@ def ask_ai(
 
 
 
-
-# curl https://api.x.ai/v1/chat/completions \
-#   -H "Content-Type: application/json" \
-#   -H "Authorization: Bearer xai-U0HjTgetIIJHAuEh8MGXL7ZvfRk696RMyBmyTUTyKZXt6emMAzgeP0UadZXm4Znh8ev1Nt413DHRYCyf" \
-#   -d '{
-#   "messages": [
-#     {
-#       "role": "system",
-#       "content": "You are a test assistant."
-#     },
-#     {
-#       "role": "user",
-#       "content": "Testing. Just say hi and hello world and nothing else."
-#     }
-#   ],
-#   "model": "grok-3-latest",
-#   "stream": false,
-#   "temperature": 0
-# }'

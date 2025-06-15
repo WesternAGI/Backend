@@ -18,3 +18,5 @@ apscheduler
 # openai-whisper
 # torch
 loguru
+pydantic-settings
+python-dotenv
