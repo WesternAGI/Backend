@@ -20,3 +20,4 @@ apscheduler
 loguru
 pydantic-settings
 python-dotenv
+email-validator
