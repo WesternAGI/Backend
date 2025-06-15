@@ -18,6 +18,9 @@ import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Union
 
+# Configure logging
+logger = logging.getLogger(__name__)
+
 # Local imports
 from server.utils.logging_utils import log_request_start
 
