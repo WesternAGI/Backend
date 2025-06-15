@@ -172,8 +172,8 @@ app.add_middleware(
 async def health_check():
     return {"status": "ok"}
 
-# Include API router with versioning
-app.include_router(router, prefix=API_PREFIX)
+# Include API router without prefix
+app.include_router(router, prefix="")
 
 if __name__ == "__main__":
     import uvicorn
