@@ -1119,35 +1119,59 @@ async def list_devices(user: User = Depends(get_current_user), db: Session = Dep
 # --- Twilio Webhook Endpoints ---
 
 @router.post("/api/webhooks/twilio/incoming-message")
-async def handle_twilio_incoming_message(request: Request, From: str = Form(...), Body: str = Form(...), db: Session = Depends(get_db)):
+async def handle_twilio_incoming_message(
+    request: Request, 
+    From: str = Form(...), 
+    Body: str = Form(""),  # Make Body optional with empty string as default
+    db: Session = Depends(get_db)
+):
     """
     Handles incoming SMS messages from Twilio, processes them via AI, and sends a reply.
     Twilio sends data as 'application/x-www-form-urlencoded'.
     """
     client_host = request.client.host if request.client else "unknown_client"
     endpoint_name = "/api/webhooks/twilio/incoming-message"
-    log_request_start(endpoint_name, "POST", dict(request.headers), client_host)
-    #logger.info(f"[{endpoint_name}] Twilio Incoming SMS from {From}: {Body}")
-
-    normalized_from_number_str = re.sub(r'\D', '', From)
-    user_query_text = Body
-    found_user: Optional[User] = None
-
-    if not normalized_from_number_str:
-        #logger.warning(f"[{endpoint_name}] Received empty or invalid 'From' number: {From}. Cannot look up user.")
-        twiml_response = "<Response><Message>Sorry, we could not identify your phone number.</Message></Response>"
-        log_response(200, twiml_response, endpoint_name)
-        return Response(content=twiml_response, media_type="application/xml", status_code=200)
-
-    phone_number_to_lookup = None
-
+    
     try:
-        phone_number_to_lookup = int(normalized_from_number_str)
-        found_user = db.query(User).filter(User.phone_number == phone_number_to_lookup).first()
-        # if found_user:
-            #logger.info(f"[{endpoint_name}] Matched Twilio number {normalized_from_number_str} (parsed as {phone_number_to_lookup}) to user {found_user.username} (ID: {found_user.userId}) via direct DB lookup.")
-    except ValueError:
-        #logger.error(f"[{endpoint_name}] Could not convert normalized phone number '{normalized_from_number_str}' to int for DB lookup.")
+        # Log the incoming request
+        headers = dict(request.headers)
+        log_request_start(endpoint_name, "POST", headers, client_host)
+        
+        # Get form data
+        form_data = await request.form()
+        logger.info(f"[{endpoint_name}] Received Twilio webhook data: {dict(form_data)}")
+        
+        # Validate required fields
+        if not From:
+            logger.warning(f"[{endpoint_name}] Missing 'From' parameter in request")
+            twiml_response = "<Response><Message>Error: Missing sender information</Message></Response>"
+            log_response(400, twiml_response, endpoint_name)
+            return Response(content=twiml_response, media_type="application/xml", status_code=400)
+            
+        # Normalize phone number
+        normalized_from_number_str = re.sub(r'\D', '', From)
+        if not normalized_from_number_str:
+            logger.warning(f"[{endpoint_name}] Could not extract phone number from: {From}")
+            twiml_response = "<Response><Message>Sorry, we could not identify your phone number.</Message></Response>"
+            log_response(200, twiml_response, endpoint_name)
+            return Response(content=twiml_response, media_type="application/xml", status_code=200)
+
+        # Look up user by phone number
+        try:
+            phone_number_to_lookup = int(normalized_from_number_str)
+            found_user = db.query(User).filter(User.phone_number == phone_number_to_lookup).first()
+            if found_user:
+                logger.info(f"Found user: {found_user.username} (ID: {found_user.userId}) for number: {phone_number_to_lookup}")
+            else:
+                logger.info(f"No user found for number: {phone_number_to_lookup}")
+                twiml_response = "<Response><Message>Sorry, we couldn't find an account with this phone number.</Message></Response>"
+                return Response(content=twiml_response, media_type="application/xml", status_code=200)
+                
+        except ValueError as ve:
+            logger.error(f"Error converting phone number '{normalized_from_number_str}' to int: {str(ve)}")
+            twiml_response = "<Response><Message>Error processing your request.</Message></Response>"
+            log_response(500, twiml_response, endpoint_name)
+            return Response(content=twiml_response, media_type="application/xml", status_code=500)
         found_user = None # Ensure found_user is None if conversion fails
     except Exception as e:
         #logger.error(f"[{endpoint_name}] Error during direct DB lookup for phone number {normalized_from_number_str}: {e}")
