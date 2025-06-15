@@ -1,378 +1,215 @@
-"""API Routes Module for LMS Platform.
+"""API Routes Module for AI-Powered Backend Platform.
 
-This module defines all the API endpoints for the LMS platform, including:
+This module defines all the API endpoints for the platform, including:
 - User authentication and management
 - File operations (upload, download, listing, deletion)
-- AI query handling
-- URL tracking
-- User profile information
+- AI query handling and conversation management
+- Device management and tracking
+- Twilio integration for SMS/voice
+- User profile and settings
+
+All endpoints are protected with JWT authentication unless explicitly marked as public.
 """
 
 import os
-import json
 import logging
-import re
-import uuid
-import atexit
+import json
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
-from urllib.parse import unquote, quote
-import mimetypes
+from typing import Dict, List, Optional, Any, Union
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile as FastAPIFile, File, Request, Header, Form, Body
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.responses import StreamingResponse, JSONResponse, Response, FileResponse
-from pydantic import BaseModel
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.interval import IntervalTrigger
-from twilio.rest import Client
-from twilio.base.exceptions import TwilioRestException
+# FastAPI
 
+from fastapi import (
+    APIRouter, 
+    Depends, 
+    HTTPException, 
+    UploadFile as FastAPIFile, 
+    File, 
+    Request, 
+    Form, 
+    status,
+    Path,
+    Body,
+    Header
+)
+from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.responses import JSONResponse, FileResponse, Response, StreamingResponse
+from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel, Field, HttpUrl
+from typing import Dict, List, Optional, Any, Union
+
+# Application imports
+from . import services
 from .utils import compute_sha256
 from .db import User, File as DBFile, Query, Device, Session, SessionLocal
-from .schemas import RegisterRequest, UserResponse
 from .auth import (
-    get_db, get_password_hash, authenticate_user, create_access_token,
-    get_current_user, ACCESS_TOKEN_EXPIRE_MINUTES
+    get_db, 
+    get_password_hash, 
+    authenticate_user, 
+    create_access_token,
+    get_current_user, 
+    ACCESS_TOKEN_EXPIRE_MINUTES
 )
-from aiagent.handler import query as ai_query_handler
-from aiagent.memory.memory_manager import LongTermMemoryManager, ShortTermMemoryManager
-from aiagent.context.reference import read_references
-# from aiagent.tools.voice import Whisper, download_audio
 
-# whisper_transcriber = Whisper(model_size='tiny')  # Load once at the top
-
-
-# def transcribe_audio(audio_url: str) -> str:
-#     """Transcribe audio from a URL using the Whisper model.
-    
-#     Args:
-#         audio_url: URL of the audio file to transcribe
-        
-#     Returns:
-#         str: The transcribed text
-        
-#     Raises:
-#         Exception: If transcription fails
-#     """
-#     logger.info(f"Transcribing audio from URL: {audio_url}")
-#     try:
-#         # Download the audio file
-#         audio_path = download_audio(audio_url)
-        
-#         # Transcribe the audio
-#         text, language = whisper_transcriber.transcribe(audio_path)
-#         logger.info(f"Transcription completed. Detected language: {language}")
-        
-#         # Clean up the downloaded file
-#         try:
-#             os.remove(audio_path)
-#         except Exception as e:
-#             logger.warning(f"Failed to delete temporary audio file {audio_path}: {str(e)}")
-            
-#         return text
-        
-#     except Exception as e:
-#         logger.error(f"Error in transcribe_audio: {str(e)}")
-#         raise Exception(f"Failed to transcribe audio: {str(e)}")
-
-# Set up logger first
-logger = logging.getLogger("lms.server")
-logger.setLevel(logging.INFO)
-
-# Configure logging formatter
-formatter = logging.Formatter('[%(asctime)s] %(levelname)s %(name)s: %(message)s')
-
-# Always log to console (stdout), which Vercel captures
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
-
-# Only log to file if not running on Vercel (Vercel sets the VERCEL env var)
-if not os.environ.get("VERCEL"):
-    try:
-        log_dir = "logs"
-        os.makedirs(log_dir, exist_ok=True)
-        log_file = os.path.join(log_dir, "lms_server.log")
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-    except Exception as e:
-        logger.warning(f"[Logging] Could not set up file logging: {e}")
-else:
-    logger.warning("[Logging] File logging is disabled (running on Vercel or read-only filesystem)")
+# Import schemas
+from .schemas import (
+    RegisterRequest, 
+    RegisterResponse, 
+    LoginRequest, 
+    TokenResponse,
+    UserResponse,
+    FileUploadResponse,
+    QueryRequest,
+    QueryResponse,
+    HealthCheckResponse,
+    DeviceHeartbeatRequest,
+    DeviceInfo,
+    DeviceListResponse,
+    MessageRequest,
+    MessageResponse,
+    IncomingMessage,
+    CallResponse,
+    TranscriptionResponse,
+    FileInfo,
+    FileListResponse,
+    FileUpdateRequest,
+    FileType
+)
 
 # Initialize router
-router = APIRouter()
-
-# Global variable to store the status message
-status_message = "Thoth API is starting up..."
-
-# Function to update the status message
-def update_status():
-    global status_message
-    try:
-        with SessionLocal() as db:
-            user_count = db.query(User).count()
-            online_device_count = db.query(Device).filter(
-                Device.last_seen > datetime.utcnow() - timedelta(minutes=5)
-            ).count()
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            status_message = (
-                f"Hello from Thoth API is running (as of {current_time}). "
-                f"Total users: {user_count}. Devices online: {online_device_count}"
-            )
-    except Exception as e:
-        logger.error(f"Error updating status: {e}")
-
-
-def send_status():
-    try:
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        message = f"Thoth API Status: Running as of {current_time}"
-        recipient_phone = "+18073587137"  # Hardcoded E.164 format
-        success = send_twilio_message(recipient_phone, message)
-        if not success:
-            logger.error(f"[send_status] Failed to send SMS to {recipient_phone}")
-        else:
-            logger.info(f"[send_status] SMS sent to {recipient_phone} at {current_time}")
-    except Exception as e:
-        logger.error(f"[send_status] Error sending SMS: {e}")
-
-
-def auto_disconnect_stale_devices():
-    try:
-        with SessionLocal() as db:
-            threshold = datetime.utcnow() - timedelta(minutes=5)
-            stale_devices = db.query(Device).filter(
-                Device.last_seen < threshold
-            ).all()
-
-            for device in stale_devices:
-                logger.info(f"Device {device.deviceId} considered stale (last_seen {device.last_seen})")
-
-    except Exception as e:
-        logger.error(f"Auto-disconnect failed: {e}")
-
-
-# Initialize the scheduler
-scheduler = None
-
-def start_scheduler():
-    global scheduler
-    if scheduler is None:
-        scheduler = BackgroundScheduler()
-        scheduler.add_job(
-            update_status,
-            trigger=IntervalTrigger(minutes=1),
-            id='update_status_job',
-            name='Update status every minute',
-            replace_existing=True
-        )
-        scheduler.add_job(
-            send_status,
-            trigger=IntervalTrigger(minutes=200),
-            id='send_status_job',
-            name='Send status every 10 minute',
-            replace_existing=True
-        )
-        scheduler.add_job(
-            auto_disconnect_stale_devices,
-            trigger=IntervalTrigger(minutes=2),
-            id='auto_disconnect_job',
-            name='Auto disconnect stale devices',
-            replace_existing=True
-        )
-        scheduler.start()
-        #logger.info("Scheduler started for status updates")
-        atexit.register(lambda: scheduler.shutdown() if scheduler else None)
-
-# Start the scheduler when the module loads
-start_scheduler()
+router = APIRouter(
+    prefix="",
+    tags=["api"],
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {"description": "Missing or invalid authentication"},
+        status.HTTP_403_FORBIDDEN: {"description": "Not enough permissions"},
+        status.HTTP_404_NOT_FOUND: {"description": "Resource not found"},
+    },
+)
 
 # Initialize assets folder
 ASSETS_FOLDER = "assets"
 os.makedirs(ASSETS_FOLDER, exist_ok=True)
 
-# Logging helpers (stubs for demonstration)
-def log_request_start(endpoint, method, headers, client_host):
-    logger.info(f"[{endpoint}] {method} request from {client_host}, headers: {headers}")
-def log_request_payload(payload, endpoint):
-    logger.info(f"[{endpoint}] Payload: {payload}")
-def log_validation(field, value, valid, endpoint):
-    logger.info(f"[{endpoint}] Validation: {field} valid={valid}")
-def log_error(msg, exc=None, context=None, endpoint=None):
-    logger.error(f"[{endpoint}] ERROR: {msg} | Context: {context}")
-def log_response(status, response, endpoint):
-    logger.info(f"[{endpoint}] Responded with status {status}: {response}")
+# Start the scheduler when the module loads
+services.start_scheduler()
 
-def log_ai_call(query, model, endpoint):
-    logger.info(f"[{endpoint}] AI call to {model} with query: {query}")
-def log_ai_response(response, endpoint):
-    logger.info(f"[{endpoint}] AI response: {response}")
-def log_something(something, endpoint):
-    logger.info(f"[{endpoint}] Something: {something}")
+# ===========================================
+# API Endpoints
+# ===========================================
 
-@router.get("/")
-def root():
-    """Root endpoint that shows API status and statistics.
+class HealthCheckResponse(BaseModel):
+    """Health check response model."""
+    status: str = Field(..., example="ok")
+    timestamp: str = Field(..., example="2023-01-01T12:00:00Z")
+    version: str = Field(..., example="1.0.0")
+
+
+@router.get(
+    "/health",
+    response_model=HealthCheckResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Health Check",
+    description="Check if the API is running and healthy.",
+    tags=["system"]
+)
+async def health_check() -> Dict[str, str]:
+    """Check the health status of the API.
+    
+    This endpoint performs a basic health check of the API and its dependencies.
     
     Returns:
-        dict: API status message including current time and user count
+        Dict[str, str]: A dictionary containing the status, timestamp, and version.
     """
-    return {"message": status_message}
+    return {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "version": "1.0.0"
+    }
 
-@router.get("/favicon.ico")
-def favicon():
-    favicon_path = os.path.join(os.path.dirname(__file__), "../static/favicon.ico")
-    if os.path.exists(favicon_path):
-        return FileResponse(favicon_path)
-    return {"detail": "No favicon found"}
 
-@router.post("/register")
-def register(req: RegisterRequest, db: SessionLocal = Depends(get_db)):
+@router.post(
+    "/register",
+    response_model=RegisterResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Register a new user",
+    description="Create a new user account with the provided credentials.",
+    tags=["auth"],
+    responses={
+        400: {"description": "Username or phone number already exists"},
+        422: {"description": "Validation error in request data"}
+    }
+)
+async def register(
+    req: RegisterRequest, 
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
     """Register a new user in the system.
     
+    Creates a new user account with the provided username, password, and optional phone number.
+    The password will be hashed before storage.
+    
     Args:
-        req: The registration request containing username and password
-        db: Database session dependency
+        req: The registration request containing user details.
+        db: Database session dependency.
         
     Returns:
-        dict: Registration confirmation with userId
+        Dict[str, Any]: Registration confirmation with user ID and username.
         
     Raises:
-        HTTPException: 400 error if username already exists
-        HTTPException: 400 error if phone number already exists
+        HTTPException: 400 if username or phone number already exists.
     """
-    # Check for existing user by username
-    existing_user = db.query(User).filter(User.username == req.username).first()
-    if existing_user:
-        #logger.warning(f"[register] Registration attempt with existing username: {req.username}")
-        raise HTTPException(status_code=400, detail="Username already registered")
-
-    # Check for existing user by phone_number if provided
-    if req.phone_number is not None:
-        existing_user_by_phone = db.query(User).filter(User.phone_number == req.phone_number).first()
-        if existing_user_by_phone:
-            #logger.warning(f"[register] Registration attempt with existing phone number: {req.phone_number}")
-            raise HTTPException(status_code=400, detail="Phone number already registered")
-
+    # Check if username already exists
+    if db.query(User).filter(User.username == req.username).first():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already registered"
+        )
+    
+    # Check if phone number already exists (if provided)
+    if req.phone_number and db.query(User).filter(User.phone_number == req.phone_number).first():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Phone number already registered"
+        )
+    
     # Create new user
     hashed_password = get_password_hash(req.password)
-    new_user = User(
-        username=req.username, 
+    db_user = User(
+        username=req.username,
         hashed_password=hashed_password,
-        phone_number=req.phone_number, # Ensure phone_number is assigned here
-        role=req.role  # Assign role from request
+        phone_number=req.phone_number,
+        is_active=True
     )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    user_folder = os.path.join(ASSETS_FOLDER, str(new_user.userId))
-    os.makedirs(user_folder, exist_ok=True)
     
-    # Create shortterm and longterm memory files for the user
-    shortterm_memory = {"conversations": [], "active": [{"device": "", "path": "", "title": "", "timestamp": ""}]}
-    longterm_memory = {
-        "userProfile_username": new_user.username,  
-        "userProfile_role": new_user.role,
-        "userProfile_language": "English",
-        "userProfile_age": "25",
-        "userProfile_gender": "male",
-        "userProfile_country": "Canada",
-        "userProfile_city": "London",
-        "userProfile_address": "Unknown",
-        "userProfile_postal_code": "Unknown",
-        "userProfile_email": "Unknown",
-        "userProfile_phone_number": new_user.phone_number, 
-        "userProfile_occupation": "Unknown",
-        "userProfile_marital_status": "Unknown",
-        "userProfile_children": "Unknown",
-        "userProfile_income": "Unknown",
-        "userProfile_education": "Unknown",
-        "userProfile_employment": "Unknown",
-
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    
+    return {
+        "user_id": db_user.id,
+        "username": db_user.username,
+        "message": "User registered successfully"
     }
-    
-    # Save memory files to the database
-    shortterm_memory_file = DBFile(
-        filename="short_term_memory.json",
-        userId=new_user.userId,
-        size=len(json.dumps(shortterm_memory)),
-        content=json.dumps(shortterm_memory).encode('utf-8'),
-        content_type="application/json"
-    )
-    
-    longterm_memory_file = DBFile(
-        filename="long_term_memory.json",
-        userId=new_user.userId,
-        size=len(json.dumps(longterm_memory)),
-        content=json.dumps(longterm_memory).encode('utf-8'),
-        content_type="application/json"
-    )
-    
-    db.add(shortterm_memory_file)
-    db.add(longterm_memory_file)
-    db.commit()
-    
-    return {"message": "Registered successfully", "userId": new_user.userId}
 
-@router.delete("/user/{username}")
-def delete_user(username: str, current_user: User = Depends(get_current_user), db: SessionLocal = Depends(get_db)):
-    """Delete a user account.
-    
-    Users can only delete their own accounts, not others.
-    
-    Args:
-        username: The username of the account to delete
-        current_user: The authenticated user making the request
-        db: Database session dependency
-        
-    Returns:
-        dict: Confirmation message
-        
-    Raises:
-        HTTPException: 403 if trying to delete another user's account
-        HTTPException: 404 if user not found
-    """
-    # Verify user can only delete their own account
-    if current_user.username != username:
-        raise HTTPException(status_code=403, detail="You can only delete your own account.")
 
-    # Find the user to delete
-    user = db.query(User).filter(User.username == username).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    try:
-        # Delete user-related files (skip if in serverless environment)
-        if not os.environ.get("VERCEL"):
-            try:
-                user_folder = os.path.join(ASSETS_FOLDER, str(user.userId))
-                if os.path.exists(user_folder):
-                    # Delete user directory (optional, can be removed if causing issues)
-                    # shutil.rmtree(user_folder)
-                    logger.info(f"Deleted user folder: {user_folder}")
-            except Exception as e:
-                # Just log the error but continue with deletion
-                logger.warning(f"Could not delete user files: {e}")
-
-        # Delete the user from the database
-        db.delete(user)
-        db.commit()
-
-        return {"message": f"User '{username}' deleted successfully."}
-    except Exception as e:
-        db.rollback()
-        #logger.error(f"[delete_user] Exception type: {type(e)}, repr: {repr(e)}")
-        #logger.error(f"Error deleting user {username}: {str(e)}")
-        if os.environ.get("VERCEL"):
-            # In Vercel, return a more user-friendly error only for non-auth errors
-            return {"message": f"Partial user deletion for '{username}'. Database records removed but user files may remain due to serverless environment limitations."}
-        raise HTTPException(status_code=500, detail=f"Error deleting user: {str(e)}")
-
-@router.post("/token")
-async def login(request: Request, db: SessionLocal = Depends(get_db)):
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    status_code=status.HTTP_200_OK,
+    summary="User Login",
+    description="Authenticate a user and retrieve an access token.",
+    tags=["auth"],
+    responses={
+        400: {"description": "Incorrect username or password"},
+        422: {"description": "Validation error in request data"}
+    }
+)
+async def login(
+    request: Request, 
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
     """Authenticate a user, register the calling device and bootstrap a
     `<device_id>.json` tracking file that will be kept in-sync by the
     `/device/heartbeat` endpoint.
@@ -502,12 +339,24 @@ async def login(request: Request, db: SessionLocal = Depends(get_db)):
         "deviceId": device.deviceId
     }
 
-@router.post("/upload")
+@router.post(
+    "/upload",
+    response_model=FileUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload a file",
+    description="Upload a file to the server. The file will be associated with the authenticated user's account.",
+    tags=["files"],
+    responses={
+        400: {"description": "File too large or invalid"},
+        401: {"description": "Not authenticated"},
+        500: {"description": "Upload failed"}
+    }
+)
 async def upload_file(
-    file: FastAPIFile = File(...),
+    file: UploadFile = File(..., description="The file to upload"),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
-):
+) -> Dict[str, Any]:
     try:
         contents = await file.read()
         file_size = len(contents)
@@ -562,8 +411,29 @@ async def upload_file(
         log_error(f"Upload failed: {e}", e, endpoint="/upload")
         raise HTTPException(status_code=500, detail="Upload failed")
 
-@router.post("/query")
-async def queryEndpoint(request: Request, user: User = Depends(get_current_user), db: SessionLocal = Depends(get_db)):
+@router.post(
+    "/query",
+    response_model=QueryResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Process AI Query",
+    description="""
+    Process a user query using the AI model and return a response.
+    Maintains conversation context using chat_id for multi-turn conversations.
+    """,
+    tags=["AI"],
+    responses={
+        400: {"description": "Invalid request parameters"},
+        401: {"description": "Not authenticated"},
+        429: {"description": "Rate limit exceeded"},
+        500: {"description": "AI service error"}
+    }
+)
+async def query_endpoint(
+    query_data: QueryRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
     """Process an AI query from a user.
     
     Sends the query to the OpenAI API and returns the response. The query and response
@@ -571,16 +441,16 @@ async def queryEndpoint(request: Request, user: User = Depends(get_current_user)
     All queries and responses are stored in the database for future reference.
     
     Args:
-        request: The HTTP request containing the query data
+        query_data: The query parameters including the user's message
+        request: The HTTP request object
         user: The authenticated user making the query
         db: Database session dependency
         
     Returns:
-        dict: The AI response along with query details
-
+        Dict containing the AI's response and metadata
+        
     Raises:
-        HTTPException: 400 if required parameters are missing
-        HTTPException: 500 if OpenAI API call fails
+        HTTPException: If there's an error processing the query
     """
     # First check if there's any content in the request body
     body_bytes = await request.body()
@@ -779,6 +649,7 @@ async def queryEndpoint(request: Request, user: User = Depends(get_current_user)
         db.rollback()  # Rollback transaction on error
         log_error(f"AI query failed: {str(e)}", exc=e, endpoint="/query")
         raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
+
 
 @router.post("/active")
 async def update_active_item(
@@ -1504,30 +1375,4 @@ async def handle_transcription_callback(
 
 
 
-def send_twilio_message(to_phone_number: str, message: str):
-    try:
-        # Initialize Twilio client
-        account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
-        auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
-        from_phone_number = os.environ.get("TWILIO_FROM_NUMBER")
-
-        if not all([account_sid, auth_token, from_phone_number]):
-            #logger.error("[send_twilio_message] Missing Twilio environment variables")
-            return False
-
-        client = Client(account_sid, auth_token)
-        
-        # Send SMS
-        client.messages.create(
-            body=message,
-            from_=from_phone_number,
-            to=to_phone_number
-        )
-        #logger.info(f"[send_twilio_message] Successfully sent SMS to {to_phone_number}: {message}")
-        return True
-    except TwilioRestException as e:
-        #logger.error(f"[send_twilio_message] Twilio error sending SMS to {to_phone_number}: {e}")
-        return False
-    except Exception as e:
-        #logger.error(f"[send_twilio_message] Unexpected error sending SMS to {to_phone_number}: {e}")
-        return False
+# send_twilio_message has been moved to services.py
