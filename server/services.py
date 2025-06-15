@@ -73,15 +73,15 @@ def get_status_message() -> str:
 
 
 def update_status():
-    """Update the status of all devices."""
+    """Update the last seen timestamp of all devices."""
     db = SessionLocal()
     try:
-        # Update device statuses
-        db.query(Device).update({Device.status: 'offline'})
+        # Update last_seen timestamp for all devices
+        db.query(Device).update({Device.last_seen: datetime.utcnow()})
         db.commit()
-        logger.info("Updated device statuses")
+        logger.info("Updated device timestamps")
     except Exception as e:
-        logger.error(f"Error updating device statuses: {e}")
+        logger.error(f"Error updating device timestamps: {e}")
         db.rollback()
     finally:
         db.close()
@@ -103,20 +103,19 @@ def send_status():
 
 
 def auto_disconnect_stale_devices():
-    """Automatically mark devices as offline if they haven't sent a heartbeat recently."""
+    """Log stale devices that haven't sent a heartbeat recently."""
     db = SessionLocal()
     try:
-        timeout = datetime.utcnow() - timedelta(minutes=5)  # 5 minutes timeout
-        stale_devices = db.query(Device).filter(Device.last_seen < timeout).all()
+        # Log devices that haven't been seen in the last 5 minutes
+        stale_time = datetime.utcnow() - timedelta(minutes=5)
+        stale_devices = db.query(Device).filter(Device.last_seen < stale_time).all()
         
         for device in stale_devices:
-            logger.info(f"Auto-disconnecting stale device: {device.device_name} ({device.device_id})")
-            device.status = 'offline'
+            logger.info(f"Device {device.deviceId} (UUID: {device.device_uuid}) last seen at {device.last_seen} is stale")
         
-        db.commit()
-        logger.info(f"Auto-disconnected {len(stale_devices)} stale devices")
+        logger.info(f"Found {len(stale_devices)} stale devices")
     except Exception as e:
-        logger.error(f"Error disconnecting stale devices: {e}")
+        logger.error(f"Error checking for stale devices: {e}")
         db.rollback()
     finally:
         db.close()
