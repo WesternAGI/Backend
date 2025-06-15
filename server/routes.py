@@ -36,13 +36,44 @@ from server.utils.logging_utils import (
     logger
 )
 
-# AI Components
-from aiagent.memory.long_term import LongTermMemoryManager
-from aiagent.memory.short_term import ShortTermMemoryManager
-from aiagent.handler.query import AIQueryHandler
+# AI Components - using local package
+import sys
+import os
+from pathlib import Path
 
-# Initialize AI Query Handler
-ai_query_handler = AIQueryHandler()
+# Add the project root to the Python path
+project_root = str(Path(__file__).parent.parent.absolute())
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
+# Now import the local aiagent package
+try:
+    from aiagent.memory.memory_manager import LongTermMemoryManager, ShortTermMemoryManager
+    from aiagent.handler.query import query_openai, summarize_conversation, update_memory
+    
+    # Create a simple wrapper class for the query handler
+    class AIQueryHandler:
+        def __init__(self):
+            self.query_openai = query_openai
+            self.summarize_conversation = summarize_conversation
+            self.update_memory = update_memory
+    
+    ai_query_handler = AIQueryHandler()
+    logger.info("AI Query Handler initialized successfully")
+    
+except ImportError as e:
+    logger.error(f"Failed to import AI components: {str(e)}")
+    # Create a dummy handler to prevent errors
+    class DummyAIHandler:
+        def query_openai(self, *args, **kwargs):
+            return "AI functionality is currently unavailable. Please check the server logs."
+        def summarize_conversation(self, *args, **kwargs):
+            return ""
+        def update_memory(self, *args, **kwargs):
+            return None
+    
+    ai_query_handler = DummyAIHandler()
+    logger.warning("Using dummy AI handler - AI features will be limited")
 
 # FastAPI
 
