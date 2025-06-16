@@ -1157,7 +1157,7 @@ async def list_devices(user: User = Depends(get_current_user), db: Session = Dep
 
 # --- Twilio Webhook Endpoints ---
 
-@router.post("/twilio/message")
+@router.post("/twilio/incoming-message")
 async def handle_twilio_incoming_message(
     request: Request, 
     From: str = Form(None), 
@@ -1391,7 +1391,7 @@ async def handle_twilio_incoming_message(
         return Response(content=twiml_error_reply, media_type="application/xml", status_code=500)
 
 
-@router.post("/twilio/status")
+@router.post("/twilio/message-status")
 async def handle_twilio_message_status(
     request: Request, 
     MessageSid: str = Form(...), 
