@@ -1195,6 +1195,7 @@ async def handle_twilio_incoming_message(
         log_response(200, twiml_response, endpoint_name)
         return Response(content=twiml_response, media_type="application/xml", status_code=200)
 
+    try:
         # Look up user by phone number
         logger.info(f"[{endpoint_name}] Looking up user with phone number: {normalized_from_number_str}")
         try:

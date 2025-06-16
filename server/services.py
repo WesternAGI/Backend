@@ -186,7 +186,7 @@ def send_twilio_message(to_phone_number: str, message: str) -> Dict[str, Any]:
     """
     try:
         # Initialize Twilio client
-        client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
+        client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
         
         # Send message
         twilio_message = client.messages.create(
