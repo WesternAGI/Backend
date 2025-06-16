@@ -455,8 +455,11 @@ async def upload_file(
 
     except Exception as e:
         db.rollback()
-        log_error(f"Upload failed: {e}", e, endpoint="/upload")
-        raise HTTPException(status_code=500, detail="Upload failed")
+        log_error(f"Upload failed: {str(e)}", e, endpoint="/upload")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"File upload failed: {str(e)}"
+        )
 
 @router.post(
     "/query",
@@ -540,26 +543,48 @@ async def query_endpoint(
         db.commit()
         db.refresh(db_query)
         
-        # Load long-term memory from DB
-        longterm_memory_file = db.query(DBFile).filter(DBFile.userId == user.userId, DBFile.filename == "long_term_memory.json").first()
-        longterm_content_str = longterm_memory_file.content.decode('utf-8') if longterm_memory_file and longterm_memory_file.content else "{}"
-
-        # Load short-term memory from DB
-        shortterm_memory_file = db.query(DBFile).filter(DBFile.userId == user.userId, DBFile.filename == "short_term_memory.json").first()
-        shortterm_content_str = shortterm_memory_file.content.decode('utf-8') if shortterm_memory_file and shortterm_memory_file.content else "{}"
-        
-        # Initialize memory managers with parsed JSON content
+        # Helper function to get or create memory file
+        def get_or_create_memory_file(filename, default_content='{}'):
+            file = db.query(DBFile).filter(DBFile.userId == user.userId, DBFile.filename == filename).first()
+            if not file:
+                # Create the file if it doesn't exist
+                file = DBFile(
+                    userId=user.userId,
+                    filename=filename,
+                    content=default_content.encode('utf-8'),
+                    content_type='application/json',
+                    size=len(default_content)
+                )
+                db.add(file)
+                db.commit()
+                db.refresh(file)
+                logger.info(f"Created new memory file: {filename} for user {user.userId}")
+            return file
+            
+        # Get or create memory files
         try:
-            longterm_memory_data = json.loads(longterm_content_str)
-            shortterm_memory_data = json.loads(shortterm_content_str)
-        except json.JSONDecodeError as e:
-            logger.error(f"Error decoding memory content from DB for user {user.userId}: {e}. LTM content: '{longterm_content_str[:200]}', STM content: '{shortterm_content_str[:200]}'")
-            # Fallback to empty memory if JSON is corrupted
-            longterm_memory_data = {}
-            shortterm_memory_data = {}
-
-        long_term_memory = LongTermMemoryManager(memory_content=longterm_memory_data)
-        short_term_memory = ShortTermMemoryManager(memory_content=shortterm_memory_data)
+            # Long-term memory
+            longterm_memory_file = get_or_create_memory_file("long_term_memory.json")
+            longterm_content_str = longterm_memory_file.content.decode('utf-8') if longterm_memory_file.content else "{}"
+            
+            # Short-term memory
+            shortterm_memory_file = get_or_create_memory_file("short_term_memory.json")
+            shortterm_content_str = shortterm_memory_file.content.decode('utf-8') if shortterm_memory_file.content else "{}"
+            
+            # Parse JSON content
+            longterm_memory_data = json.loads(longterm_content_str) if longterm_content_str.strip() else {}
+            shortterm_memory_data = json.loads(shortterm_content_str) if shortterm_content_str.strip() else {}
+            
+            # Initialize memory managers
+            long_term_memory = LongTermMemoryManager(memory_content=longterm_memory_data)
+            short_term_memory = ShortTermMemoryManager(memory_content=shortterm_memory_data)
+            
+        except Exception as e:
+            logger.error(f"Error initializing memory managers for user {user.userId}: {str(e)}")
+            # Fallback to empty memories
+            long_term_memory = LongTermMemoryManager()
+            short_term_memory = ShortTermMemoryManager()
+            logger.info("Initialized empty memory managers due to error")
 
         # Include user markdown notes in the query context
         try:
