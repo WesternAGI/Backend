@@ -167,7 +167,21 @@ app.add_middleware(
     max_age=600,  # 10 minutes
 )
 
-# Add a simple health check endpoint
+# Root endpoint
+@app.get("/")
+async def root():
+    return {
+        "message": "Welcome to the AI-Powered Backend API",
+        "status": "operational",
+        "documentation": {
+            "swagger": "/docs",
+            "redoc": "/redoc",
+            "openapi_schema": "/openapi.json"
+        },
+        "health_check": "/health"
+    }
+
+# Health check endpoint
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
