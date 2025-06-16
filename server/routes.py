@@ -233,6 +233,18 @@ async def register(
 
 
 @router.post(
+    "/token",
+    response_model=TokenResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Token Endpoint (OAuth2 Compatible)",
+    description="OAuth2 compatible token endpoint. Forwards to the login endpoint.",
+    tags=["auth"],
+    responses={
+        400: {"description": "Incorrect username or password"},
+        422: {"description": "Validation error in request data"}
+    }
+)
+@router.post(
     "/login",
     response_model=TokenResponse,
     status_code=status.HTTP_200_OK,
@@ -247,7 +259,10 @@ async def register(
 async def login(
     request: Request, 
     form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    device_id: str = Form(None),
+    device_name: str = Form(None),
+    device_type: str = Form(None)
 ) -> Dict[str, Any]:
     """Authenticate a user, register the calling device and bootstrap a
     `<device_id>.json` tracking file that will be kept in-sync by the
