@@ -379,6 +379,10 @@ async def login(
     return {
         "access_token": access_token,
         "token_type": "bearer",
+        "expires_in": int(ACCESS_TOKEN_EXPIRE_MINUTES * 60),  # Convert minutes to seconds
+        "user_id": user.userId,
+        "username": user.username,
+        "role": "user",  # Default role, adjust as needed
         "deviceId": device.deviceId
     }
 
