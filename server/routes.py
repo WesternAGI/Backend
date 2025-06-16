@@ -232,20 +232,9 @@ async def register(
     }
 
 
+
 @router.post(
     "/token",
-    response_model=TokenResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Token Endpoint (OAuth2 Compatible)",
-    description="OAuth2 compatible token endpoint. Forwards to the login endpoint.",
-    tags=["auth"],
-    responses={
-        400: {"description": "Incorrect username or password"},
-        422: {"description": "Validation error in request data"}
-    }
-)
-@router.post(
-    "/login",
     response_model=TokenResponse,
     status_code=status.HTTP_200_OK,
     summary="User Login",
