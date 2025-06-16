@@ -719,8 +719,21 @@ async def query_endpoint(
         }
     except Exception as e:
         db.rollback()  # Rollback transaction on error
-        log_error(f"AI query failed: {str(e)}", exc=e, endpoint="/query")
-        raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
+        error_msg = f"AI query failed: {str(e)}. Type: {type(e).__name__}. Args: {e.args}"
+        log_error(error_msg, exc=e, endpoint="/query")
+        
+        # Include more detailed error information in development
+        detail_msg = f"Error processing query: {str(e)}"
+        if not os.environ.get("PRODUCTION"):
+            detail_msg += f"\nType: {type(e).__name__}\nArgs: {e.args}"
+            import traceback
+            detail_msg += f"\n\nTraceback:\n{traceback.format_exc()}"
+            
+        raise HTTPException(
+            status_code=500, 
+            detail=detail_msg,
+            headers={"X-Error-Details": str(e)}
+        )
 
 
 @router.post("/active")
@@ -1190,7 +1203,7 @@ async def list_devices(user: User = Depends(get_current_user), db: Session = Dep
 
 # --- Twilio Webhook Endpoints ---
 
-@router.post("/twilio/incoming-message")
+@router.post("/api/webhooks/twilio/incoming-message")
 async def handle_twilio_incoming_message(
     request: Request, 
     From: str = Form(None), 
