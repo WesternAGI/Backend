@@ -1,12 +1,89 @@
+# AI-Agent Backend API
 
 
-First, you need to clone this repository. 
+## Quick Start
 
-Second, you need to create a virtual environment using the requirements.txt file and activate the environment. 
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/yourusername/backend.git
+   cd backend
+   ```
 
-To test the server locally:
-1: From the main directory (Backend), run the server locally:python -m server.main
-2: Run the test script locally: TEST_LOCAL=1 pytest -s test1.py 
+2. **Set up environment variables**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your configuration
+   ```
 
-To test the deployed server (which is running on Railway.app)
-1: Run the test script: pytest -s test1.py 
+3. **Set up virtual environment and install dependencies**
+   ```bash
+   python -m venv venv
+   # On Windows:
+   .\venv\Scripts\activate
+   # On macOS/Linux:
+   # source venv/bin/activate
+   
+   pip install -r requirements.txt
+   ```
+
+4. **Run the server locally**
+   ```bash
+   python -m server.main
+   ```
+
+5. **Run tests**
+   ```bash
+   TEST_LOCAL=1 pytest -s test1.py
+   # For all tests:
+   # pytest
+   ```
+
+The API will be available at `http://localhost:8000`
+
+## API Documentation
+
+Once the server is running, you can access:
+
+- **Interactive API Docs (Swagger UI)**: http://localhost:8000/docs
+- **Alternative API Docs (ReDoc)**: http://localhost:8000/redoc
+
+## Environment Variables
+
+See [.env.example](.env.example) for all available configuration options.
+
+## Project Structure
+
+```
+backend/
+├── server/               # Main application package
+│   ├── __init__.py
+│   ├── main.py           # FastAPI app initialization
+│   ├── routes.py         # API endpoints
+│   ├── auth.py           # Authentication utilities
+│   ├── db.py             # Database models and session
+│   ├── schemas.py        # Pydantic models
+│   └── utils.py          # Helper functions
+├── aiagent/             # AI-related functionality
+│   ├── handler/         # Request handlers
+│   ├── memory/          # Memory management
+│   └── tools/           # AI tools and utilities
+├── tests/               # Test files
+├── .env.example         # Example environment variables
+├── requirements.txt     # Python dependencies
+└── README.md           # This file
+```
+
+## Development
+
+### Running Tests
+
+```bash
+# Run a specific test file
+TEST_LOCAL=1 pytest -s test1.py
+
+# Run all tests
+pytest
+
+# Run with coverage report
+pytest --cov=server --cov-report=html
+```

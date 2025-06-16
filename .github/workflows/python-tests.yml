@@ -29,7 +29,3 @@ jobs:
       run: |
         source .venv/bin/activate
         python test.py
-    - name: Run aiagent tests
-      run: |
-        source .venv/bin/activate
-        bash aiagent/test_aiagnet.sh

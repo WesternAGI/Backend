@@ -1,12 +1,127 @@
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
+from fastapi.openapi.utils import get_openapi
+from typing import Dict, Any, Optional
+from pathlib import Path
+import os
 from server.routes import router
 
+# Application metadata
+APP_TITLE = "AI-Powered Backend API"
+APP_DESCRIPTION = """
+A FastAPI-based backend service
+"""
+APP_VERSION = "1.0.0"
+API_PREFIX = "/api"
+
+# Initialize FastAPI with custom OpenAPI configuration
 app = FastAPI(
-    docs_url="/api-docs",
-    redoc_url="/api-redoc"
+    title=APP_TITLE,
+    description=APP_DESCRIPTION,
+    version=APP_VERSION,
+    docs_url=None,  # Disable default docs
+    redoc_url=None,  # Disable default redoc
+    openapi_url=f"{API_PREFIX}/openapi.json",
+    contact={
+        "name": "Gad Gad",
+        "email": "ggad@uwo.ca"
+    },
+    license_info={
+        "name": "MIT",
+        "url": "https://opensource.org/licenses/MIT"
+    },
+    openapi_tags=[
+        {
+            "name": "auth",
+            "description": "Authentication and user management endpoints"
+        },
+        {
+            "name": "files",
+            "description": "File upload and management endpoints"
+        },
+        {
+            "name": "ai",
+            "description": "AI-powered query endpoints"
+        },
+        {
+            "name": "devices",
+            "description": "Device management and tracking"
+        },
+        {
+            "name": "twilio",
+            "description": "Twilio webhook endpoints"
+        }
+    ]
 )
+
+# Custom OpenAPI schema
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    
+    openapi_schema = get_openapi(
+        title=APP_TITLE,
+        version=APP_VERSION,
+        description=APP_DESCRIPTION,
+        routes=app.routes,
+    )
+    
+    # Add error responses to all endpoints
+    for path in openapi_schema["paths"].values():
+        for method in path.values():
+            if "responses" not in method:
+                method["responses"] = {}
+            if "400" not in method["responses"]:
+                method["responses"]["400"] = {
+                    "description": "Bad Request",
+                    "content": {"application/json": {"example": {"detail": "Invalid request data"}}}
+                }
+            if "401" not in method["responses"]:
+                method["responses"]["401"] = {
+                    "description": "Unauthorized",
+                    "content": {"application/json": {"example": {"detail": "Not authenticated"}}}
+                }
+            if "403" not in method["responses"]:
+                method["responses"]["403"] = {
+                    "description": "Forbidden",
+                    "content": {"application/json": {"example": {"detail": "Not enough permissions"}}}
+                }
+            if "404" not in method["responses"]:
+                method["responses"]["404"] = {
+                    "description": "Not Found",
+                    "content": {"application/json": {"example": {"detail": "Item not found"}}}
+                }
+            if "422" not in method["responses"]:
+                method["responses"]["422"] = {
+                    "description": "Validation Error",
+                    "content": {"application/json": {"example": {"detail": [{"loc": ["string", 0], "msg": "string", "type": "string"}]}}}
+                }
+    
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
+
+# Custom docs endpoints
+@app.get("/api-docs", include_in_schema=False)
+async def custom_swagger_ui_html():
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=f"{app.title} - Swagger UI",
+        oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
+        swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js",
+        swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css",
+    )
+
+@app.get("/api-redoc", include_in_schema=False)
+async def redoc_html():
+    return get_redoc_html(
+        openapi_url=app.openapi_url,
+        title=f"{app.title} - ReDoc",
+        redoc_js_url="https://cdn.jsdelivr.net/npm/redoc@next/bundles/redoc.standalone.js",
+    )
 
 # List of allowed origins
 ALLOWED_ORIGINS = [
@@ -57,8 +172,8 @@ app.add_middleware(
 async def health_check():
     return {"status": "ok"}
 
-# Include your router
-app.include_router(router)
+# Include API router without prefix
+app.include_router(router, prefix="")
 
 if __name__ == "__main__":
     import uvicorn

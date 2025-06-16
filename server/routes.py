@@ -1,378 +1,254 @@
-"""API Routes Module for LMS Platform.
+"""API Routes Module for AI-Powered Backend Platform.
 
-This module defines all the API endpoints for the LMS platform, including:
+This module defines all the API endpoints for the platform, including:
 - User authentication and management
 - File operations (upload, download, listing, deletion)
-- AI query handling
-- URL tracking
-- User profile information
+- AI query handling and conversation management
+- Device management and tracking
+- Twilio integration for SMS/voice
+- User profile and settings
+
+All endpoints are protected with JWT authentication unless explicitly marked as public.
 """
 
 import os
-import json
-import logging
 import re
+import logging
+import json
 import uuid
-import atexit
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
-from urllib.parse import unquote, quote
 import mimetypes
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any, Union
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile as FastAPIFile, File, Request, Header, Form, Body
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.responses import StreamingResponse, JSONResponse, Response, FileResponse
-from pydantic import BaseModel
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.interval import IntervalTrigger
-from twilio.rest import Client
-from twilio.base.exceptions import TwilioRestException
+# Configure logging
+logger = logging.getLogger(__name__)
 
+# Local imports
+from server.utils.logging_utils import (
+    log_request_start, 
+    log_response,
+    log_error,
+    log_something,
+    log_ai_call,
+    log_ai_response,
+    log_request_payload,
+    logger
+)
+
+# AI Components - using local package
+import sys
+import os
+from pathlib import Path
+
+# Add the project root to the Python path
+project_root = str(Path(__file__).parent.parent.absolute())
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
+
+from aiagent.memory.memory_manager import LongTermMemoryManager, ShortTermMemoryManager
+from aiagent.handler.query import query_openai, summarize_conversation, update_memory
+    
+# Create a simple wrapper class for the query handler
+class AIQueryHandler:
+    def __init__(self):
+        self.query_openai = query_openai
+        self.summarize_conversation = summarize_conversation
+        self.update_memory = update_memory
+
+ai_query_handler = AIQueryHandler()
+logger.info("AI Query Handler initialized successfully")
+    
+
+
+from fastapi import (
+    APIRouter, 
+    Depends, 
+    HTTPException, 
+    UploadFile as FastAPIFile, 
+    File, 
+    Request, 
+    Form, 
+    status,
+    Path,
+    Body,
+    Header
+)
+from fastapi import UploadFile
+from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.responses import JSONResponse, FileResponse, Response, StreamingResponse
+from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel, Field, HttpUrl
+from typing import Dict, List, Optional, Any, Union
+
+# Application imports
+from . import services
 from .utils import compute_sha256
 from .db import User, File as DBFile, Query, Device, Session, SessionLocal
-from .schemas import RegisterRequest, UserResponse
 from .auth import (
-    get_db, get_password_hash, authenticate_user, create_access_token,
-    get_current_user, ACCESS_TOKEN_EXPIRE_MINUTES
+    get_db, 
+    get_password_hash, 
+    authenticate_user, 
+    create_access_token,
+    get_current_user, 
+    ACCESS_TOKEN_EXPIRE_MINUTES
 )
-from aiagent.handler import query as ai_query_handler
-from aiagent.memory.memory_manager import LongTermMemoryManager, ShortTermMemoryManager
-from aiagent.context.reference import read_references
-# from aiagent.tools.voice import Whisper, download_audio
 
-# whisper_transcriber = Whisper(model_size='tiny')  # Load once at the top
-
-
-# def transcribe_audio(audio_url: str) -> str:
-#     """Transcribe audio from a URL using the Whisper model.
-    
-#     Args:
-#         audio_url: URL of the audio file to transcribe
-        
-#     Returns:
-#         str: The transcribed text
-        
-#     Raises:
-#         Exception: If transcription fails
-#     """
-#     logger.info(f"Transcribing audio from URL: {audio_url}")
-#     try:
-#         # Download the audio file
-#         audio_path = download_audio(audio_url)
-        
-#         # Transcribe the audio
-#         text, language = whisper_transcriber.transcribe(audio_path)
-#         logger.info(f"Transcription completed. Detected language: {language}")
-        
-#         # Clean up the downloaded file
-#         try:
-#             os.remove(audio_path)
-#         except Exception as e:
-#             logger.warning(f"Failed to delete temporary audio file {audio_path}: {str(e)}")
-            
-#         return text
-        
-#     except Exception as e:
-#         logger.error(f"Error in transcribe_audio: {str(e)}")
-#         raise Exception(f"Failed to transcribe audio: {str(e)}")
-
-# Set up logger first
-logger = logging.getLogger("lms.server")
-logger.setLevel(logging.INFO)
-
-# Configure logging formatter
-formatter = logging.Formatter('[%(asctime)s] %(levelname)s %(name)s: %(message)s')
-
-# Always log to console (stdout), which Vercel captures
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
-
-# Only log to file if not running on Vercel (Vercel sets the VERCEL env var)
-if not os.environ.get("VERCEL"):
-    try:
-        log_dir = "logs"
-        os.makedirs(log_dir, exist_ok=True)
-        log_file = os.path.join(log_dir, "lms_server.log")
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-    except Exception as e:
-        logger.warning(f"[Logging] Could not set up file logging: {e}")
-else:
-    logger.warning("[Logging] File logging is disabled (running on Vercel or read-only filesystem)")
+# Import schemas
+from .schemas.health import HealthCheckResponse
+from .schemas import (
+    RegisterRequest, 
+    RegisterResponse, 
+    LoginRequest, 
+    TokenResponse,
+    UserResponse,
+    FileUploadResponse,
+    QueryRequest,
+    QueryResponse,
+    DeviceHeartbeatRequest,
+    DeviceInfo,
+    DeviceListResponse,
+    MessageRequest,
+    MessageResponse,
+    IncomingMessage,
+    CallResponse,
+    TranscriptionResponse,
+    FileInfo,
+    FileListResponse,
+    FileUpdateRequest,
+    FileType
+)
 
 # Initialize router
-router = APIRouter()
-
-# Global variable to store the status message
-status_message = "Thoth API is starting up..."
-
-# Function to update the status message
-def update_status():
-    global status_message
-    try:
-        with SessionLocal() as db:
-            user_count = db.query(User).count()
-            online_device_count = db.query(Device).filter(
-                Device.last_seen > datetime.utcnow() - timedelta(minutes=5)
-            ).count()
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            status_message = (
-                f"Hello from Thoth API is running (as of {current_time}). "
-                f"Total users: {user_count}. Devices online: {online_device_count}"
-            )
-    except Exception as e:
-        logger.error(f"Error updating status: {e}")
-
-
-def send_status():
-    try:
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        message = f"Thoth API Status: Running as of {current_time}"
-        recipient_phone = "+18073587137"  # Hardcoded E.164 format
-        success = send_twilio_message(recipient_phone, message)
-        if not success:
-            logger.error(f"[send_status] Failed to send SMS to {recipient_phone}")
-        else:
-            logger.info(f"[send_status] SMS sent to {recipient_phone} at {current_time}")
-    except Exception as e:
-        logger.error(f"[send_status] Error sending SMS: {e}")
-
-
-def auto_disconnect_stale_devices():
-    try:
-        with SessionLocal() as db:
-            threshold = datetime.utcnow() - timedelta(minutes=5)
-            stale_devices = db.query(Device).filter(
-                Device.last_seen < threshold
-            ).all()
-
-            for device in stale_devices:
-                logger.info(f"Device {device.deviceId} considered stale (last_seen {device.last_seen})")
-
-    except Exception as e:
-        logger.error(f"Auto-disconnect failed: {e}")
-
-
-# Initialize the scheduler
-scheduler = None
-
-def start_scheduler():
-    global scheduler
-    if scheduler is None:
-        scheduler = BackgroundScheduler()
-        scheduler.add_job(
-            update_status,
-            trigger=IntervalTrigger(minutes=1),
-            id='update_status_job',
-            name='Update status every minute',
-            replace_existing=True
-        )
-        scheduler.add_job(
-            send_status,
-            trigger=IntervalTrigger(minutes=200),
-            id='send_status_job',
-            name='Send status every 10 minute',
-            replace_existing=True
-        )
-        scheduler.add_job(
-            auto_disconnect_stale_devices,
-            trigger=IntervalTrigger(minutes=2),
-            id='auto_disconnect_job',
-            name='Auto disconnect stale devices',
-            replace_existing=True
-        )
-        scheduler.start()
-        #logger.info("Scheduler started for status updates")
-        atexit.register(lambda: scheduler.shutdown() if scheduler else None)
-
-# Start the scheduler when the module loads
-start_scheduler()
+router = APIRouter(
+    prefix="",
+    tags=["api"],
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {"description": "Missing or invalid authentication"},
+        status.HTTP_403_FORBIDDEN: {"description": "Not enough permissions"},
+        status.HTTP_404_NOT_FOUND: {"description": "Resource not found"},
+    },
+)
 
 # Initialize assets folder
 ASSETS_FOLDER = "assets"
 os.makedirs(ASSETS_FOLDER, exist_ok=True)
 
-# Logging helpers (stubs for demonstration)
-def log_request_start(endpoint, method, headers, client_host):
-    logger.info(f"[{endpoint}] {method} request from {client_host}, headers: {headers}")
-def log_request_payload(payload, endpoint):
-    logger.info(f"[{endpoint}] Payload: {payload}")
-def log_validation(field, value, valid, endpoint):
-    logger.info(f"[{endpoint}] Validation: {field} valid={valid}")
-def log_error(msg, exc=None, context=None, endpoint=None):
-    logger.error(f"[{endpoint}] ERROR: {msg} | Context: {context}")
-def log_response(status, response, endpoint):
-    logger.info(f"[{endpoint}] Responded with status {status}: {response}")
+# Start the scheduler when the module loads
+services.start_scheduler()
 
-def log_ai_call(query, model, endpoint):
-    logger.info(f"[{endpoint}] AI call to {model} with query: {query}")
-def log_ai_response(response, endpoint):
-    logger.info(f"[{endpoint}] AI response: {response}")
-def log_something(something, endpoint):
-    logger.info(f"[{endpoint}] Something: {something}")
+# ===========================================
+# API Endpoints
+# ===========================================
 
-@router.get("/")
-def root():
-    """Root endpoint that shows API status and statistics.
+
+
+@router.get(
+    "/health",
+    response_model=HealthCheckResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Health Check",
+    description="Check if the API is running and healthy.",
+    tags=["system"]
+)
+async def health_check() -> HealthCheckResponse:
+    """Check the health status of the API.
+    
+    This endpoint performs a basic health check of the API and its dependencies.
     
     Returns:
-        dict: API status message including current time and user count
+        HealthCheckResponse: The health check response containing status, timestamp, and version.
     """
-    return {"message": status_message}
+    return HealthCheckResponse(
+        status="ok",
+        timestamp=datetime.utcnow().isoformat() + "Z",
+        version="1.0.0"
+    )
 
-@router.get("/favicon.ico")
-def favicon():
-    favicon_path = os.path.join(os.path.dirname(__file__), "../static/favicon.ico")
-    if os.path.exists(favicon_path):
-        return FileResponse(favicon_path)
-    return {"detail": "No favicon found"}
 
-@router.post("/register")
-def register(req: RegisterRequest, db: SessionLocal = Depends(get_db)):
+@router.post(
+    "/register",
+    response_model=RegisterResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Register a new user",
+    description="Create a new user account with the provided credentials.",
+    tags=["auth"],
+    responses={
+        400: {"description": "Username or phone number already exists"},
+        422: {"description": "Validation error in request data"}
+    }
+)
+async def register(
+    req: RegisterRequest, 
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
     """Register a new user in the system.
     
+    Creates a new user account with the provided username, password, and optional phone number.
+    The password will be hashed before storage.
+    
     Args:
-        req: The registration request containing username and password
-        db: Database session dependency
+        req: The registration request containing user details.
+        db: Database session dependency.
         
     Returns:
-        dict: Registration confirmation with userId
+        Dict[str, Any]: Registration confirmation with user ID and username.
         
     Raises:
-        HTTPException: 400 error if username already exists
-        HTTPException: 400 error if phone number already exists
+        HTTPException: 400 if username or phone number already exists.
     """
-    # Check for existing user by username
-    existing_user = db.query(User).filter(User.username == req.username).first()
-    if existing_user:
-        #logger.warning(f"[register] Registration attempt with existing username: {req.username}")
-        raise HTTPException(status_code=400, detail="Username already registered")
-
-    # Check for existing user by phone_number if provided
-    if req.phone_number is not None:
-        existing_user_by_phone = db.query(User).filter(User.phone_number == req.phone_number).first()
-        if existing_user_by_phone:
-            #logger.warning(f"[register] Registration attempt with existing phone number: {req.phone_number}")
-            raise HTTPException(status_code=400, detail="Phone number already registered")
-
+    # Check if username already exists
+    if db.query(User).filter(User.username == req.username).first():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already registered"
+        )
+    
+    # Check if phone number already exists (if provided)
+    if req.phone_number and db.query(User).filter(User.phone_number == req.phone_number).first():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Phone number already registered"
+        )
+    
     # Create new user
     hashed_password = get_password_hash(req.password)
-    new_user = User(
-        username=req.username, 
+    db_user = User(
+        username=req.username,
         hashed_password=hashed_password,
-        phone_number=req.phone_number, # Ensure phone_number is assigned here
-        role=req.role  # Assign role from request
+        phone_number=req.phone_number,
+        is_active=True
     )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    user_folder = os.path.join(ASSETS_FOLDER, str(new_user.userId))
-    os.makedirs(user_folder, exist_ok=True)
     
-    # Create shortterm and longterm memory files for the user
-    shortterm_memory = {"conversations": [], "active": [{"device": "", "path": "", "title": "", "timestamp": ""}]}
-    longterm_memory = {
-        "userProfile_username": new_user.username,  
-        "userProfile_role": new_user.role,
-        "userProfile_language": "English",
-        "userProfile_age": "25",
-        "userProfile_gender": "male",
-        "userProfile_country": "Canada",
-        "userProfile_city": "London",
-        "userProfile_address": "Unknown",
-        "userProfile_postal_code": "Unknown",
-        "userProfile_email": "Unknown",
-        "userProfile_phone_number": new_user.phone_number, 
-        "userProfile_occupation": "Unknown",
-        "userProfile_marital_status": "Unknown",
-        "userProfile_children": "Unknown",
-        "userProfile_income": "Unknown",
-        "userProfile_education": "Unknown",
-        "userProfile_employment": "Unknown",
-
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    
+    return {
+        "user_id": db_user.id,
+        "username": db_user.username,
+        "message": "User registered successfully"
     }
-    
-    # Save memory files to the database
-    shortterm_memory_file = DBFile(
-        filename="short_term_memory.json",
-        userId=new_user.userId,
-        size=len(json.dumps(shortterm_memory)),
-        content=json.dumps(shortterm_memory).encode('utf-8'),
-        content_type="application/json"
-    )
-    
-    longterm_memory_file = DBFile(
-        filename="long_term_memory.json",
-        userId=new_user.userId,
-        size=len(json.dumps(longterm_memory)),
-        content=json.dumps(longterm_memory).encode('utf-8'),
-        content_type="application/json"
-    )
-    
-    db.add(shortterm_memory_file)
-    db.add(longterm_memory_file)
-    db.commit()
-    
-    return {"message": "Registered successfully", "userId": new_user.userId}
 
-@router.delete("/user/{username}")
-def delete_user(username: str, current_user: User = Depends(get_current_user), db: SessionLocal = Depends(get_db)):
-    """Delete a user account.
-    
-    Users can only delete their own accounts, not others.
-    
-    Args:
-        username: The username of the account to delete
-        current_user: The authenticated user making the request
-        db: Database session dependency
-        
-    Returns:
-        dict: Confirmation message
-        
-    Raises:
-        HTTPException: 403 if trying to delete another user's account
-        HTTPException: 404 if user not found
-    """
-    # Verify user can only delete their own account
-    if current_user.username != username:
-        raise HTTPException(status_code=403, detail="You can only delete your own account.")
 
-    # Find the user to delete
-    user = db.query(User).filter(User.username == username).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    try:
-        # Delete user-related files (skip if in serverless environment)
-        if not os.environ.get("VERCEL"):
-            try:
-                user_folder = os.path.join(ASSETS_FOLDER, str(user.userId))
-                if os.path.exists(user_folder):
-                    # Delete user directory (optional, can be removed if causing issues)
-                    # shutil.rmtree(user_folder)
-                    logger.info(f"Deleted user folder: {user_folder}")
-            except Exception as e:
-                # Just log the error but continue with deletion
-                logger.warning(f"Could not delete user files: {e}")
-
-        # Delete the user from the database
-        db.delete(user)
-        db.commit()
-
-        return {"message": f"User '{username}' deleted successfully."}
-    except Exception as e:
-        db.rollback()
-        #logger.error(f"[delete_user] Exception type: {type(e)}, repr: {repr(e)}")
-        #logger.error(f"Error deleting user {username}: {str(e)}")
-        if os.environ.get("VERCEL"):
-            # In Vercel, return a more user-friendly error only for non-auth errors
-            return {"message": f"Partial user deletion for '{username}'. Database records removed but user files may remain due to serverless environment limitations."}
-        raise HTTPException(status_code=500, detail=f"Error deleting user: {str(e)}")
-
-@router.post("/token")
-async def login(request: Request, db: SessionLocal = Depends(get_db)):
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    status_code=status.HTTP_200_OK,
+    summary="User Login",
+    description="Authenticate a user and retrieve an access token.",
+    tags=["auth"],
+    responses={
+        400: {"description": "Incorrect username or password"},
+        422: {"description": "Validation error in request data"}
+    }
+)
+async def login(
+    request: Request, 
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
     """Authenticate a user, register the calling device and bootstrap a
     `<device_id>.json` tracking file that will be kept in-sync by the
     `/device/heartbeat` endpoint.
@@ -502,12 +378,24 @@ async def login(request: Request, db: SessionLocal = Depends(get_db)):
         "deviceId": device.deviceId
     }
 
-@router.post("/upload")
+@router.post(
+    "/upload",
+    response_model=FileUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload a file",
+    description="Upload a file to the server. The file will be associated with the authenticated user's account.",
+    tags=["files"],
+    responses={
+        400: {"description": "File too large or invalid"},
+        401: {"description": "Not authenticated"},
+        500: {"description": "Upload failed"}
+    }
+)
 async def upload_file(
-    file: FastAPIFile = File(...),
+    file: UploadFile = File(..., description="The file to upload"),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
-):
+) -> Dict[str, Any]:
     try:
         contents = await file.read()
         file_size = len(contents)
@@ -562,8 +450,29 @@ async def upload_file(
         log_error(f"Upload failed: {e}", e, endpoint="/upload")
         raise HTTPException(status_code=500, detail="Upload failed")
 
-@router.post("/query")
-async def queryEndpoint(request: Request, user: User = Depends(get_current_user), db: SessionLocal = Depends(get_db)):
+@router.post(
+    "/query",
+    response_model=QueryResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Process AI Query",
+    description="""
+    Process a user query using the AI model and return a response.
+    Maintains conversation context using chat_id for multi-turn conversations.
+    """,
+    tags=["AI"],
+    responses={
+        400: {"description": "Invalid request parameters"},
+        401: {"description": "Not authenticated"},
+        429: {"description": "Rate limit exceeded"},
+        500: {"description": "AI service error"}
+    }
+)
+async def query_endpoint(
+    query_data: QueryRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
     """Process an AI query from a user.
     
     Sends the query to the OpenAI API and returns the response. The query and response
@@ -571,16 +480,16 @@ async def queryEndpoint(request: Request, user: User = Depends(get_current_user)
     All queries and responses are stored in the database for future reference.
     
     Args:
-        request: The HTTP request containing the query data
+        query_data: The query parameters including the user's message
+        request: The HTTP request object
         user: The authenticated user making the query
         db: Database session dependency
         
     Returns:
-        dict: The AI response along with query details
-
+        Dict containing the AI's response and metadata
+        
     Raises:
-        HTTPException: 400 if required parameters are missing
-        HTTPException: 500 if OpenAI API call fails
+        HTTPException: If there's an error processing the query
     """
     # First check if there's any content in the request body
     body_bytes = await request.body()
@@ -779,6 +688,7 @@ async def queryEndpoint(request: Request, user: User = Depends(get_current_user)
         db.rollback()  # Rollback transaction on error
         log_error(f"AI query failed: {str(e)}", exc=e, endpoint="/query")
         raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
+
 
 @router.post("/active")
 async def update_active_item(
@@ -1247,19 +1157,36 @@ async def list_devices(user: User = Depends(get_current_user), db: Session = Dep
 
 # --- Twilio Webhook Endpoints ---
 
-@router.post("/webhooks/twilio/incoming-message")
-async def handle_twilio_incoming_message(request: Request, From: str = Form(...), Body: str = Form(...), db: Session = Depends(get_db)):
+@router.post("/twilio/message")
+async def handle_twilio_incoming_message(
+    request: Request, 
+    From: str = Form(None), 
+    Body: str = Form(""),
+    db: Session = Depends(get_db)
+):
+    """Handle incoming SMS messages from Twilio and respond with AI-generated text.
+    
+    Args:
+        request: The incoming HTTP request
+        From: The sender's phone number (from Twilio form data)
+        Body: The message body (from Twilio form data)
+        db: Database session
     """
-    Handles incoming SMS messages from Twilio, processes them via AI, and sends a reply.
-    Twilio sends data as 'application/x-www-form-urlencoded'.
-    """
+    # If From/Body not provided as parameters, try to get from form data
+    form_data = await request.form()
+    from_number = From or form_data.get("From")
+    message_body = Body or form_data.get("Body", "")
+    
+    if not from_number:
+        raise HTTPException(status_code=400, detail="Missing 'From' parameter")
+        
     client_host = request.client.host if request.client else "unknown_client"
-    endpoint_name = "/webhooks/twilio/incoming-message"
+    endpoint_name = "/twilio/message"
     log_request_start(endpoint_name, "POST", dict(request.headers), client_host)
     #logger.info(f"[{endpoint_name}] Twilio Incoming SMS from {From}: {Body}")
 
-    normalized_from_number_str = re.sub(r'\D', '', From)
-    user_query_text = Body
+    normalized_from_number_str = re.sub(r'\D', '', from_number)
+    user_query_text = message_body
     found_user: Optional[User] = None
 
     if not normalized_from_number_str:
@@ -1268,84 +1195,162 @@ async def handle_twilio_incoming_message(request: Request, From: str = Form(...)
         log_response(200, twiml_response, endpoint_name)
         return Response(content=twiml_response, media_type="application/xml", status_code=200)
 
-    phone_number_to_lookup = None
-
-    try:
-        phone_number_to_lookup = int(normalized_from_number_str)
-        found_user = db.query(User).filter(User.phone_number == phone_number_to_lookup).first()
-        # if found_user:
-            #logger.info(f"[{endpoint_name}] Matched Twilio number {normalized_from_number_str} (parsed as {phone_number_to_lookup}) to user {found_user.username} (ID: {found_user.userId}) via direct DB lookup.")
-    except ValueError:
-        #logger.error(f"[{endpoint_name}] Could not convert normalized phone number '{normalized_from_number_str}' to int for DB lookup.")
-        found_user = None # Ensure found_user is None if conversion fails
+        # Look up user by phone number
+        logger.info(f"[{endpoint_name}] Looking up user with phone number: {normalized_from_number_str}")
+        try:
+            phone_number_to_lookup = int(normalized_from_number_str)
+            found_user = db.query(User).filter(User.phone_number == phone_number_to_lookup).first()
+        except ValueError as ve:
+            logger.error(f"[{endpoint_name}] Invalid phone number format: {normalized_from_number_str}", exc_info=True)
+            return Response(
+                content="<Response><Message>Invalid phone number format.</Message></Response>",
+                media_type="application/xml",
+                status_code=200
+            )
+        
+        if not found_user:
+            logger.info(f"[{endpoint_name}] No user found for number: {normalized_from_number_str}")
+            return Response(
+                content="<Response><Message>Sorry, we couldn't find an account with this phone number.</Message></Response>",
+                media_type="application/xml",
+                status_code=200
+            )
+            
+        logger.info(f"[{endpoint_name}] Found user: {found_user.username} (ID: {found_user.userId})")
+        
+        # Extract the message body which contains the user's query
+        user_query_text = message_body.strip() if message_body else ""
+        
+        if not user_query_text:
+            logger.warning(f"[{endpoint_name}] Empty message body from user {found_user.userId}")
+            return Response(
+                content="<Response><Message>Please provide a message with your query.</Message></Response>",
+                media_type="application/xml",
+                status_code=200
+            )
+            
     except Exception as e:
-        #logger.error(f"[{endpoint_name}] Error during direct DB lookup for phone number {normalized_from_number_str}: {e}")
-        found_user = None # Ensure found_user is None on other DB errors
-
-
-
-    if not found_user:
-        #logger.warning(f"[{endpoint_name}] No user found for Twilio number {normalized_from_number_str} ({From}) after all lookups. Sending 'not recognized' message.")
-        twiml_response = "<Response><Message>Sorry, you are not recognized by Gad.</Message></Response>"
-        log_response(200, twiml_response, endpoint_name)
-        return Response(content=twiml_response, media_type="application/xml", status_code=200)
-
-    # User found, proceed with AI query
-    user = found_user
-    chat_id = f"sms_{normalized_from_number_str}" # Consistent chat ID for SMS user
-
-    try:
-        # Create a new query record in the database
-        db_query = Query(
-            userId=user.userId,
-            chatId=chat_id,
-            query_text=user_query_text
+        logger.error(f"[{endpoint_name}] Unexpected error during request processing: {str(e)}", exc_info=True)
+        return Response(
+            content="<Response><Message>An unexpected error occurred. Please try again later.</Message></Response>",
+            media_type="application/xml",
+            status_code=500
         )
-        db.add(db_query)
-        db.commit()
-        db.refresh(db_query)
-        log_ai_call(user_query_text, "default_sms_model", endpoint_name)
+    
+    # If we get here, we have a valid user and query text
+    try:
+        # Generate a chat ID for SMS conversations
+        chat_id = f"sms_{found_user.userId}_{int(datetime.utcnow().timestamp())}"
+        logger.info(f"[{endpoint_name}] Generated chat_id: {chat_id}")
+        
+        try:
+            # Create a new query record in the database
+            logger.info(f"[{endpoint_name}] Creating new query record in database")
+            db_query = Query(
+                userId=found_user.userId,
+                chatId=chat_id,
+                query_text=user_query_text
+            )
+            db.add(db_query)
+            db.commit()
+            db.refresh(db_query)
+            logger.info(f"[{endpoint_name}] Successfully created query with ID: {db_query.queryId}")
+            log_ai_call(user_query_text, "default_sms_model", endpoint_name)
+        except Exception as e:
+            logger.error(f"[{endpoint_name}] Error creating query record: {str(e)}", exc_info=True)
+            raise
 
-        # Retrieve memory files
-        shortterm_file_db = db.query(DBFile).filter(
-            DBFile.userId == user.userId, DBFile.filename == "short_term_memory.json"
-        ).first()
-        longterm_file_db = db.query(DBFile).filter(
-            DBFile.userId == user.userId, DBFile.filename == "long_term_memory.json"
-        ).first()
+        # Initialize memory managers with default content if files don't exist
+        logger.info(f"[{endpoint_name}] Initializing memory managers")
+        short_term_memory = ShortTermMemoryManager()
+        long_term_memory = LongTermMemoryManager()
+        
+        # Try to load existing memory files if they exist
+        try:
+            logger.info(f"[{endpoint_name}] Attempting to load memory files for user {found_user.userId}")
+            
+            shortterm_file_db = db.query(DBFile).filter(
+                DBFile.userId == found_user.userId, 
+                DBFile.filename == "short_term_memory.json"
+            ).first()
+            logger.debug(f"[{endpoint_name}] Short-term memory file found: {shortterm_file_db is not None}")
+            
+            longterm_file_db = db.query(DBFile).filter(
+                DBFile.userId == found_user.userId, 
+                DBFile.filename == "long_term_memory.json"
+            ).first()
+            logger.debug(f"[{endpoint_name}] Long-term memory file found: {longterm_file_db is not None}")
+            
+            if shortterm_file_db and shortterm_file_db.content:
+                logger.debug(f"[{endpoint_name}] Loading short-term memory content")
+                shortterm_content = json.loads(shortterm_file_db.content.decode('utf-8'))
+                short_term_memory = ShortTermMemoryManager(memory_content=shortterm_content)
+                logger.info(f"[{endpoint_name}] Successfully loaded short-term memory")
+            else:
+                logger.info(f"[{endpoint_name}] No short-term memory content found, using default")
+                
+            if longterm_file_db and longterm_file_db.content:
+                logger.debug(f"[{endpoint_name}] Loading long-term memory content")
+                longterm_content = json.loads(longterm_file_db.content.decode('utf-8'))
+                long_term_memory = LongTermMemoryManager(memory_content=longterm_content)
+                logger.info(f"[{endpoint_name}] Successfully loaded long-term memory")
+            else:
+                logger.info(f"[{endpoint_name}] No long-term memory content found, using default")
+                
+        except json.JSONDecodeError as je:
+            logger.error(f"[{endpoint_name}] JSON decode error in memory files: {str(je)}", exc_info=True)
+            logger.error(f"[{endpoint_name}] Short-term content (truncated): {str(shortterm_file_db.content)[:200] if shortterm_file_db and shortterm_file_db.content else 'None'}")
+            logger.error(f"[{endpoint_name}] Long-term content (truncated): {str(longterm_file_db.content)[:200] if longterm_file_db and longterm_file_db.content else 'None'}")
+        except Exception as e:
+            logger.error(f"[{endpoint_name}] Error loading memory files: {str(e)}", exc_info=True)
+            logger.error(f"[{endpoint_name}] Error type: {type(e).__name__}")
+            logger.error(f"[{endpoint_name}] Error args: {e.args}")
 
-        shortterm_content = json.loads(shortterm_file_db.content.decode('utf-8')) if shortterm_file_db and shortterm_file_db.content else {}
-        longterm_content = json.loads(longterm_file_db.content.decode('utf-8')) if longterm_file_db and longterm_file_db.content else {}
-
-        short_term_memory = ShortTermMemoryManager(memory_content=shortterm_content)
-        long_term_memory = LongTermMemoryManager(memory_content=longterm_content)
-
-        aux_data = {
-            "username": user.username,
-            "user_id": user.userId,
-            "chat_id": chat_id,
-            "query_id": db_query.queryId,
-            "client_info": {
-                "max_tokens": 1024,
-                "temperature": 0.7
+        try:
+            aux_data = {
+                "username": found_user.username,
+                "user_id": found_user.userId,
+                "chat_id": chat_id,
+                "query_id": db_query.queryId,
+                "client_info": {
+                    "max_tokens": 1024,
+                    "temperature": 0.7
+                }
             }
-        }
+            logger.info(f"[{endpoint_name}] Created aux_data: {json.dumps(aux_data, default=str)}")
+        except Exception as e:
+            logger.error(f"[{endpoint_name}] Error creating aux_data: {str(e)}", exc_info=True)
+            raise
         
         # references = read_references()
 
-        ai_response = ai_query_handler.query_openai(
-            query=user_query_text,
-            long_term_memory=long_term_memory,
-            short_term_memory=short_term_memory,
-            aux_data=aux_data,
-            max_tokens=aux_data["client_info"]["max_tokens"],
-            temperature=aux_data["client_info"]["temperature"],
-            # references=references,
-        )
-        log_ai_response(ai_response, endpoint_name)
+        try:
+            logger.info(f"[{endpoint_name}] Calling AI query handler with query: {user_query_text}")
+            ai_response = ai_query_handler.query_openai(
+                query=user_query_text,
+                long_term_memory=long_term_memory,
+                short_term_memory=short_term_memory,
+                aux_data=aux_data,
+                max_tokens=aux_data["client_info"]["max_tokens"],
+                temperature=aux_data["client_info"]["temperature"],
+                # references=references,
+            )
+            logger.info(f"[{endpoint_name}] Successfully received AI response")
+            log_ai_response(ai_response, endpoint_name)
+        except Exception as e:
+            logger.error(f"[{endpoint_name}] Error in AI query handler: {str(e)}", exc_info=True)
+            logger.error(f"[{endpoint_name}] Error type: {type(e).__name__}")
+            logger.error(f"[{endpoint_name}] Error args: {e.args}")
+            raise
 
-        db_query.response = ai_response # Store AI response
-        db.commit()
+        try:
+            db_query.response = ai_response # Store AI response
+            db.commit()
+            logger.info(f"[{endpoint_name}] Successfully updated query with AI response")
+        except Exception as e:
+            logger.error(f"[{endpoint_name}] Error updating query with response: {str(e)}", exc_info=True)
+            db.rollback()
+            raise
 
         if not ai_response.startswith("Error:"):
             summary = ai_query_handler.summarize_conversation(user_query_text, ai_response)
@@ -1386,19 +1391,38 @@ async def handle_twilio_incoming_message(request: Request, From: str = Form(...)
         return Response(content=twiml_error_reply, media_type="application/xml", status_code=500)
 
 
-@router.post("/webhooks/twilio/message-status")
-async def handle_twilio_message_status(request: Request, MessageSid: str = Form(...), MessageStatus: str = Form(...)):
+@router.post("/twilio/status")
+async def handle_twilio_message_status(
+    request: Request, 
+    MessageSid: str = Form(...), 
+    MessageStatus: str = Form(...),
+    To: str = Form(None),
+    From: str = Form(None),
+    ErrorCode: str = Form(None)
+):
+    """Handle message status callbacks from Twilio.
+    
+    Args:
+        request: The incoming HTTP request
+        MessageSid: The unique ID of the message
+        MessageStatus: The delivery status of the message
+        To: The recipient phone number (optional)
+        From: The sender phone number (optional)
+        ErrorCode: Error code if message failed (optional)
     """
-    Handles delivery status updates for outbound messages from Twilio.
-    """
+    endpoint = "/twilio/status"
     client_host = request.client.host if request.client else "unknown_client"
-    log_request_start("/webhooks/twilio/message-status", "POST", dict(request.headers), client_host)
-    #logger.info(f"[/webhooks/twilio/message-status] Twilio Message SID {MessageSid} status: {MessageStatus}")
+    log_request_start(endpoint, "POST", dict(request.headers), client_host)
     
-    # --- Your logic here to update message status in your DB ---
+    # Log the status update
+    logger.info(f"Twilio Message Status Update - SID: {MessageSid}, Status: {MessageStatus}")
     
-    log_response(200, "OK", "/webhooks/twilio/message-status")
-    return Response(status_code=200)
+    # If there's an error code, log it as an error
+    if ErrorCode:
+        logger.error(f"Message {MessageSid} failed with error code: {ErrorCode}")
+    
+    log_response(200, "OK", "/twilio/status")
+    return {"status": "ok"}
 
 
 
@@ -1504,30 +1528,4 @@ async def handle_transcription_callback(
 
 
 
-def send_twilio_message(to_phone_number: str, message: str):
-    try:
-        # Initialize Twilio client
-        account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
-        auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
-        from_phone_number = os.environ.get("TWILIO_FROM_NUMBER")
-
-        if not all([account_sid, auth_token, from_phone_number]):
-            #logger.error("[send_twilio_message] Missing Twilio environment variables")
-            return False
-
-        client = Client(account_sid, auth_token)
-        
-        # Send SMS
-        client.messages.create(
-            body=message,
-            from_=from_phone_number,
-            to=to_phone_number
-        )
-        #logger.info(f"[send_twilio_message] Successfully sent SMS to {to_phone_number}: {message}")
-        return True
-    except TwilioRestException as e:
-        #logger.error(f"[send_twilio_message] Twilio error sending SMS to {to_phone_number}: {e}")
-        return False
-    except Exception as e:
-        #logger.error(f"[send_twilio_message] Unexpected error sending SMS to {to_phone_number}: {e}")
-        return False
+# send_twilio_message has been moved to services.py

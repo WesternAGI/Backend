@@ -1,14 +1,15 @@
 # sphinx
 # sphinx-rtd-theme
-fastapi
-uvicorn[standard]
-SQLAlchemy
-psycopg2-binary
-python-jose[cryptography]
-passlib[bcrypt]
-python-multipart
-twilio
-pydantic
+fastapi>=0.95.0
+uvicorn[standard]>=0.21.0
+SQLAlchemy>=2.0.0
+psycopg2-binary>=2.9.5
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.5
+twilio>=8.0.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
 pytest
 openai
 pytesseract
@@ -18,7 +19,9 @@ apscheduler
 # openai-whisper
 # torch
 loguru
-flask 
-google-auth-oauthlib 
-google-api-python-client 
+flask
+google-auth-oauthlib
+google-api-python-client
 requests
+python-dotenv
+email-validator

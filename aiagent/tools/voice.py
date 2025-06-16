@@ -136,6 +136,7 @@ def download_audio(recording_url: str, local_path: str = "temp_audio.mp3") -> st
         logger.error(error_msg)
         raise Exception(error_msg)
 
-
-# Create a global instance for easy import
-whisper_transcriber = Whisper(model_size='tiny')
+if __name__ == "__main__":
+    
+    # Create a global instance for easy import
+    whisper_transcriber = Whisper(model_size='tiny')
