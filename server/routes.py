@@ -1247,14 +1247,14 @@ async def list_devices(user: User = Depends(get_current_user), db: Session = Dep
 
 # --- Twilio Webhook Endpoints ---
 
-@router.post("/api/webhooks/twilio/incoming-message")
+@router.post("/webhooks/twilio/incoming-message")
 async def handle_twilio_incoming_message(request: Request, From: str = Form(...), Body: str = Form(...), db: Session = Depends(get_db)):
     """
     Handles incoming SMS messages from Twilio, processes them via AI, and sends a reply.
     Twilio sends data as 'application/x-www-form-urlencoded'.
     """
     client_host = request.client.host if request.client else "unknown_client"
-    endpoint_name = "/api/webhooks/twilio/incoming-message"
+    endpoint_name = "/webhooks/twilio/incoming-message"
     log_request_start(endpoint_name, "POST", dict(request.headers), client_host)
     #logger.info(f"[{endpoint_name}] Twilio Incoming SMS from {From}: {Body}")
 
@@ -1386,23 +1386,23 @@ async def handle_twilio_incoming_message(request: Request, From: str = Form(...)
         return Response(content=twiml_error_reply, media_type="application/xml", status_code=500)
 
 
-@router.post("/api/webhooks/twilio/message-status")
+@router.post("/webhooks/twilio/message-status")
 async def handle_twilio_message_status(request: Request, MessageSid: str = Form(...), MessageStatus: str = Form(...)):
     """
     Handles delivery status updates for outbound messages from Twilio.
     """
     client_host = request.client.host if request.client else "unknown_client"
-    log_request_start("/api/webhooks/twilio/message-status", "POST", dict(request.headers), client_host)
-    #logger.info(f"[/api/webhooks/twilio/message-status] Twilio Message SID {MessageSid} status: {MessageStatus}")
+    log_request_start("/webhooks/twilio/message-status", "POST", dict(request.headers), client_host)
+    #logger.info(f"[/webhooks/twilio/message-status] Twilio Message SID {MessageSid} status: {MessageStatus}")
     
     # --- Your logic here to update message status in your DB ---
     
-    log_response(200, "OK", "/api/webhooks/twilio/message-status")
+    log_response(200, "OK", "/webhooks/twilio/message-status")
     return Response(status_code=200)
 
 
 
-@router.post("/api/webhooks/twilio/incoming-call")
+@router.post("/webhooks/twilio/incoming-call")
 async def handle_twilio_incoming_call(
     request: Request,
     From: str = Form(...),
@@ -1426,9 +1426,9 @@ async def handle_twilio_incoming_call(
     <Response>
         <Say voice="alice">Hi {username}, how can I help you today?</Say>
         <Record 
-            action="/api/webhooks/twilio/incoming-call" 
+            action="/webhooks/twilio/incoming-call" 
             transcribe="true"
-            transcribeCallback="/api/webhooks/twilio/transcription-callback"
+            transcribeCallback="/webhooks/twilio/transcription-callback"
             maxLength="30"
             timeout="5"
             playBeep="true" />
@@ -1437,7 +1437,7 @@ async def handle_twilio_incoming_call(
     return Response(content=twiml.strip(), media_type="application/xml", status_code=200)
 
 
-@router.post("/api/webhooks/twilio/transcription-callback")
+@router.post("/webhooks/twilio/transcription-callback")
 async def handle_transcription_callback(
     request: Request,
     From: str = Form(...),
