@@ -600,7 +600,7 @@ async def query_endpoint(
                     note_text = (nf.content or b'').decode('utf-8', errors='ignore')
                 except Exception:
                     note_text = ''
-                notes_parts.append(f"{nf.filename}_{note_text}")
+                notes_parts.append(f"<BEGIN NOTE>{nf.filename}:{note_text}<END NOTE>")
             if notes_parts:
                 concatenated_notes = "_".join(notes_parts)
                 user_query += "\n\nthese are the notes of the user:" + concatenated_notes
@@ -609,37 +609,7 @@ async def query_endpoint(
 
         # Call your AI agent with try/except to handle Vercel environment limitations
         try:
-            logger.info(f"Attempting to import aiagent modules for user {user.userId}")
             try:
-                from aiagent.handler.query import query_openai
-                from aiagent.handler.query import summarize_conversation, update_memory
-                logger.info("Successfully imported aiagent modules")
-            except ImportError as ie:
-                logger.error(f"Failed to import aiagent modules: {str(ie)}", exc_info=True)
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"AI service configuration error: {str(ie)}"
-                )
-            
-            try:
-                # Set up auxiliary data for the AI query
-                aux_data = {
-                    "username": user.username,
-                    "user_id": user.userId,
-                    "chat_id": chat_id,
-                    "query_id": db_query.queryId
-                }
-                logger.debug(f"Set up aux_data: {aux_data}")
-                
-                # Read references
-                logger.info("Attempting to load references")
-                from aiagent.context.reference import read_references
-                try:
-                    references = read_references()
-                    logger.info(f"Loaded {len(references)} references")
-                except Exception as e:
-                    logger.error(f"Error loading references: {e}", exc_info=True)
-                    references = {}
                 
                 logger.info(f"Sending query to AI: {user_query[:100]}...")
                 # Send query to AI agent using query_openai instead of ask_ai
@@ -647,8 +617,6 @@ async def query_endpoint(
                     query=user_query,
                     long_term_memory=long_term_memory,
                     short_term_memory=short_term_memory,
-                    aux_data=aux_data,
-                    references=references,
                     max_tokens=1000,  # Default max tokens
                     temperature=0.7  # Default temperature
                 )
@@ -661,10 +629,10 @@ async def query_endpoint(
             if not response.startswith("Error:"):
                 # Update shortterm memory
                 conversations = shortterm_memory_data.get("conversations", [])
-                # Create a summary
-                from aiagent.handler.query import summarize_conversation, update_memory
-                summary = summarize_conversation(user_query, response)
-                updated = update_memory(user_query, response, long_term_memory) 
+                
+                
+                summary = ai_query_handler.summarize_conversation(user_query, response)
+                updated = ai_query_handler.update_memory(user_query, response, long_term_memory) 
                 
                 # Update conversations
                 shortterm_memory_data["conversations"] = conversations + [{

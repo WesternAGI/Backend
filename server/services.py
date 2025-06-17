@@ -191,7 +191,7 @@ def send_twilio_message(to_phone_number: str, message: str) -> Dict[str, Any]:
         # Send message
         twilio_message = client.messages.create(
             body=message,
-            from_=settings.twilio_phone_number,
+            from_=settings.TWILIO_PHONE_NUMBER,
             to=to_phone_number
         )
         
