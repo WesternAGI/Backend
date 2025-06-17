@@ -630,7 +630,6 @@ async def query_endpoint(
                 # Update shortterm memory
                 conversations = shortterm_memory_data.get("conversations", [])
                 
-                
                 summary = ai_query_handler.summarize_conversation(user_query, response)
                 updated = ai_query_handler.update_memory(user_query, response, long_term_memory) 
                 
@@ -698,11 +697,19 @@ async def query_endpoint(
         db_query.response = response
         db.commit()
         
+        # Get the model name from the environment or use a default
+        model_name = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
+        
+        # Estimate tokens used (this is a rough estimate since we don't have exact token count)
+        tokens_used = len(response.split()) + len(user_query.split())
+        
         return {
             "response": response,
             "query": user_query,
             "chat_id": chat_id,
-            "queryId": db_query.queryId
+            "queryId": db_query.queryId,
+            "tokens_used": tokens_used,
+            "model": model_name
         }
     except Exception as e:
         db.rollback()  # Rollback transaction on error
@@ -716,11 +723,16 @@ async def query_endpoint(
             import traceback
             detail_msg += f"\n\nTraceback:\n{traceback.format_exc()}"
             
-        raise HTTPException(
-            status_code=500, 
-            detail=detail_msg,
-            headers={"X-Error-Details": str(e)}
+        # Always return JSON response
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": detail_msg,
+                "type": type(e).__name__,
+                "args": str(e.args)
+            }
         )
+        
 
 
 @router.post("/active")
