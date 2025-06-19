@@ -130,7 +130,65 @@ ALLOWED_ORIGINS = [
     "https://web-production-d7d37.up.railway.app"  # Your backend domain
 ]
 
+# --------------------------------------------------
+# Global logging middleware
+# --------------------------------------------------
+from time import perf_counter
+from server.utils.logging_utils import (
+    log_request_start,
+    log_request_payload,
+    log_response,
+    log_error,
+    logger as app_logger,
+)
+
+@app.middleware("http")
+async def global_logging_middleware(request: Request, call_next):
+    """Middleware that logs every request and response with latency."""
+    start = perf_counter()
+    endpoint = request.url.path
+
+    # Read body (non-stream) for small payloads ONLY (< 10 kB)
+    try:
+        body_bytes = await request.body()
+        if body_bytes and len(body_bytes) <= 10_240:  # 10 KB safety limit
+            try:
+                body_str = body_bytes.decode("utf-8", errors="ignore")
+            except Exception:
+                body_str = str(body_bytes)[:1000]
+        else:
+            body_str = f"<{len(body_bytes)} bytes>" if body_bytes else "<empty>"
+    except Exception:
+        body_str = "<stream or large body>"
+
+    # Log the request
+    log_request_start(
+        endpoint,
+        request.method,
+        headers=dict(request.headers),
+        remote_addr=request.client.host if request.client else None,
+    )
+    if body_str:
+        log_request_payload(body_str, endpoint)
+
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        # Log exception and re-raise so default handler still runs
+        log_error(str(exc), exc, endpoint=endpoint)
+        raise
+    finally:
+        duration_ms = (perf_counter() - start) * 1000
+        # Log response summary
+        status_code = getattr(response, "status_code", "<no response>")
+        log_response(status_code, f"<{status_code}>" if status_code else "<unknown>", endpoint)
+        app_logger.info("[PERF] %s %s completed in %.2f ms", request.method, endpoint, duration_ms)
+
+    return response
+
+# --------------------------------------------------
 # Enhanced CORS middleware
+# --------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,

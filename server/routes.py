@@ -164,7 +164,7 @@ async def health_check() -> HealthCheckResponse:
 
 
 @router.post(
-    "/register",
+    "/register", 
     response_model=RegisterResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Register a new user",
@@ -382,6 +382,7 @@ async def login(
         "deviceId": device.deviceId
     }
 
+
 @router.post(
     "/upload",
     response_model=FileUploadResponse,
@@ -405,7 +406,9 @@ async def upload_file(
         file_size = len(contents)
         file_hash = compute_sha256(contents)
 
-        if file_size > user.max_file_size:
+        # Use user's configured max file size if present, otherwise fall back to 500 MB.
+        max_file_size = user.max_file_size or 524_288_000  # 500 MB default
+        if file_size > max_file_size:
             raise HTTPException(status_code=400, detail="File too large")
 
         existing = db.query(DBFile).filter(
@@ -456,6 +459,7 @@ async def upload_file(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"File upload failed: {str(e)}"
         )
+
 
 @router.post(
     "/query",
