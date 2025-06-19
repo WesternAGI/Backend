@@ -131,10 +131,6 @@ router = APIRouter(
     },
 )
 
-# Initialize assets folder
-ASSETS_FOLDER = "assets"
-os.makedirs(ASSETS_FOLDER, exist_ok=True)
-
 # Start the scheduler when the module loads
 services.start_scheduler()
 
@@ -914,15 +910,7 @@ def download_file(fileId: int, user: User = Depends(get_current_user), db: Sessi
                     file_content = f.read()
                 content_type = file_record.content_type or "application/octet-stream"
             else:
-                # Try standard path as fallback
-                user_folder = os.path.join(ASSETS_FOLDER, str(user.userId))
-                fallback_path = os.path.join(user_folder, file_record.filename)
-                if os.path.exists(fallback_path):
-                    with open(fallback_path, "rb") as f:
-                        file_content = f.read()
-                    content_type = file_record.content_type or "application/octet-stream"
-                else:
-                    raise HTTPException(status_code=404, detail="File content not found")
+                raise HTTPException(status_code=404, detail="File content not found")
         
         # Guess content type from filename if not set
         if not content_type or content_type == "application/octet-stream":
@@ -973,26 +961,7 @@ def delete_file(fileId: int, user: User = Depends(get_current_user), db: Session
         if file_record.userId != user.userId:
             raise HTTPException(status_code=403, detail="You don't have permission to delete this file")
         
-        # Get file information before deleting
-        filename = file_record.filename
-        filepath = file_record.path
-        
-        # Delete the file from disk if it exists
-        try:
-            # If filepath is None, we're using database storage, so no need to remove from disk
-            if filepath and os.path.exists(filepath):
-                os.remove(filepath)
-            else:
-                # Try the standard path pattern as fallback (only for non-Vercel environments)
-                if not os.environ.get("VERCEL") and not os.environ.get("READ_ONLY_FS"):
-                    user_folder = os.path.join(ASSETS_FOLDER, str(user.userId))
-                    fallback_path = os.path.join(user_folder, filename)
-                    if os.path.exists(fallback_path):
-                        os.remove(fallback_path)
-        except (OSError, TypeError) as e:
-            # Continue even if file removal fails, as we still want to remove the database record
-            log_error(f"Error removing file from disk: {str(e)}", exc=e, endpoint=f"/delete/{fileId}")
-        
+
         # Delete the database record
         db.delete(file_record)
         db.commit()
@@ -1049,38 +1018,21 @@ async def device_heartbeat(
             Device.device_uuid == device_id
         ).first()
 
-    if not device and device_name:
-        device = db.query(Device).filter(
-            Device.userId == user.userId,
-            Device.device_name == device_name
-        ).first()
 
-    # Create the device entry on first heartbeat if it was not registered
+
+    # raise error if device not found
     if not device:
-        # Fallback defaults
-        if not device_name:
-            device_name = f"device_{device_id[:6] if device_id else uuid.uuid4().hex[:6]}"
-        if not device_type:
-            device_type = "unknown_type"
-
-        device = Device(
-            userId=user.userId,
-            device_name=device_name,
-            device_type=device_type,
-            device_uuid=device_id,
-        )
-        db.add(device)
-        db.commit()
-        db.refresh(device)
+        raise HTTPException(status_code=404, detail="Device not found")
 
     # Update the last-seen timestamp
     device.last_seen = now
     db.commit()
 
     # ------------------------------------------------------------------
-    # Persist foreground context to the <device_id>.json file
+    # Persist foreground context to the <device_id>_<timestamp>.json file
     # ------------------------------------------------------------------
-    filename = f"{device.deviceId}.json"
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    filename = f"{device.deviceId}_{timestamp}.json"
     file_entry = db.query(DBFile).filter(
         DBFile.userId == user.userId,
         DBFile.filename == filename
@@ -1090,7 +1042,12 @@ async def device_heartbeat(
         try:
             data = json.loads(file_entry.content.decode("utf-8"))
         except Exception:
-            data = {"events": []}
+            data = {
+                "deviceId": device.deviceId,
+                "device_name": device_name,
+                "device_type": device_type,
+                "events": []
+            }
     else:
         data = {
             "deviceId": device.deviceId,
@@ -1108,6 +1065,18 @@ async def device_heartbeat(
     })
 
     updated_bytes = json.dumps(data).encode("utf-8")
+
+    # remove old device files (10 days old)
+    old_files = db.query(DBFile).filter(
+        DBFile.userId == user.userId,
+        DBFile.filename.like(f"{device.deviceId}_%")
+    ).filter(
+        DBFile.uploaded_at < (now - timedelta(days=10))
+    ).all()
+    for old_file in old_files:
+        db.delete(old_file)
+
+
 
     if file_entry:
         file_entry.content = updated_bytes
