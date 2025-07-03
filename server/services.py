@@ -110,6 +110,12 @@ def auto_disconnect_stale_devices():
         stale_time = datetime.utcnow() - timedelta(minutes=5)
         stale_devices = db.query(Device).filter(Device.last_seen < stale_time).all()
         
+        # Disconnect stale devices
+        for device in stale_devices:
+            device.online = False
+            db.add(device)
+            db.commit()
+            
         for device in stale_devices:
             logger.info(f"Device {device.deviceId} (UUID: {device.device_uuid}) last seen at {device.last_seen} is stale")
         

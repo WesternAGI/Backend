@@ -6,7 +6,7 @@ It includes the User model and database connection configuration.
 
 import os
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Text, LargeBinary, UniqueConstraint, SmallInteger, BigInteger
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Text, LargeBinary, UniqueConstraint, SmallInteger, BigInteger, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
 # Load environment variables from .env if present
@@ -173,6 +173,7 @@ class Device(Base):
     device_name = Column("device_name", String, nullable=False)
     device_type = Column("device_type", String, nullable=False)
     last_seen = Column("last_seen", DateTime, default=datetime.utcnow)
+    online = Column("online", Boolean, default=False)
 
     # Relationship back to user
     user = relationship("User", back_populates="devices")

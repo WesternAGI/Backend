@@ -302,6 +302,7 @@ async def login(
             device_type=device_type,
             device_uuid=device_uuid,
         )
+        device.online = True
         db.add(device)
         db.commit()
         db.refresh(device)
@@ -309,6 +310,7 @@ async def login(
         # Keep server-side name/type up-to-date in case they changed on client
         device.device_name = device_name
         device.device_type = device_type
+        device.online = True
         if device_uuid and not device.device_uuid:
             device.device_uuid = device_uuid
         db.commit()
@@ -502,20 +504,17 @@ async def query_endpoint(
     Raises:
         HTTPException: If there's an error processing the query
     """
-    # First check if there's any content in the request body
-    body_bytes = await request.body()
-    if not body_bytes:
-        return JSONResponse({"error": "Empty request body"}, status_code=400)
-        
+    
     # Try to parse the JSON body
     try:
         body = await request.json()
+        if not body:
+            return JSONResponse({"error": "Empty request body"}, status_code=400)
     except json.JSONDecodeError as json_err:
         return JSONResponse({"error": f"Invalid JSON in request body: {str(json_err)}"}, status_code=400)
         
 
     try:
-        
         # Check for required fields
         if not body.get("query"):
             return JSONResponse(status_code=400, content={"error": "No query provided"})
@@ -603,7 +602,8 @@ async def query_endpoint(
                 notes_parts.append(f"<BEGIN NOTE>{nf.filename}:{note_text}<END NOTE>")
             if notes_parts:
                 concatenated_notes = "_".join(notes_parts)
-                user_query += "\n\nthese are the notes of the user:" + concatenated_notes
+                user_query += "\n\nThese are the notes of the user. Notes are separated by _ and each note is in the format <BEGIN NOTE>filename:note<END NOTE> ::" 
+                user_query += concatenated_notes
         except Exception as e:
             logger.error(f"Error loading user notes for query: {e}")
 
@@ -617,7 +617,7 @@ async def query_endpoint(
                     query=user_query,
                     long_term_memory=long_term_memory,
                     short_term_memory=short_term_memory,
-                    max_tokens=1000,  # Default max tokens
+                    max_tokens=10000,  # Default max tokens
                     temperature=0.7  # Default temperature
                 )
                 logger.info("Successfully received response from AI")
@@ -634,11 +634,15 @@ async def query_endpoint(
                 updated = ai_query_handler.update_memory(user_query, response, long_term_memory) 
                 
                 # Update conversations
-                shortterm_memory_data["conversations"] = conversations + [{
+                conversations += [{
                     "query": user_query, 
                     "response": response, 
                     "summary": summary
                 }]
+                # limit conversations to 50
+                if len(conversations) > 50:
+                    conversations = conversations[-50:]
+                shortterm_memory_data["conversations"] = conversations
 
                 # save updated longterm memory
                 if updated : 
@@ -683,12 +687,7 @@ async def query_endpoint(
         except FileNotFoundError as file_err:
             # Handle missing files in Vercel environment
             log_error(f"AI agent file not found: {str(file_err)}", exc=file_err, endpoint="/query")
-            if os.environ.get("VERCEL"):
-                # In Vercel, return a graceful error message for testing purposes
-                response = "The AI agent is not fully configured in this environment. This is a test instance."
-            else:
-                # In non-Vercel environments, still raise the error
-                raise file_err
+            raise file_err
         
         # Log the response
         log_ai_response(response, "/query")
@@ -1030,12 +1029,13 @@ async def device_heartbeat(
 
     # Update the last-seen timestamp
     device.last_seen = now
+    device.online = True
     db.commit()
 
     # ------------------------------------------------------------------
     # Persist foreground context to the <device_id>_<timestamp>.json file
     # ------------------------------------------------------------------
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now().strftime("%Y-%m-%d")
     filename = f"{device.deviceId}_{timestamp}.json"
     file_entry = db.query(DBFile).filter(
         DBFile.userId == user.userId,
@@ -1131,10 +1131,9 @@ async def device_logout(
         ).first()
 
     if device:
-        # Mark device as offline by moving last_seen outside the online threshold
-        offline_time = datetime.utcnow() - timedelta(minutes=10)
-        device.last_seen = offline_time
-        logger.info(f"[device_logout] Marked device '{device.device_name}' as offline at {offline_time.isoformat()}")
+        device.online = False
+        device.last_seen = datetime.utcnow()
+        logger.info(f"[device_logout] Set device '{device.device_name}' offline")
         db.commit()
 
     return {
@@ -1157,7 +1156,7 @@ async def list_devices(user: User = Depends(get_current_user), db: Session = Dep
 
         device_list = []
         for device in devices:
-            online = bool(device.last_seen and device.last_seen > threshold)
+            online = device.online
             device_list.append({
                 "deviceId": device.deviceId,
                 "name": device.device_name,

@@ -106,9 +106,9 @@ def query_openai(
         #logging.info(f"Context messages: {messages}")
         
         # Query OPENAI
-        #logging.info("Sending query to OPENAI")
+        model_name = os.getenv("MODEL_NAME")
         response = client.chat.completions.create(
-            model="gpt-4.1-nano-2025-04-14",
+            model=model_name, 
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
