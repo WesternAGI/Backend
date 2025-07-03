@@ -318,7 +318,8 @@ async def login(
     # ------------------------------------------------------------------
     # Create an initial per-device tracking file (<device_id>.json)
     # ------------------------------------------------------------------
-    filename = f"{device.deviceId}.json"
+    today = datetime.now().strftime("%Y-%m-%d")
+    filename = f"{device.deviceId}_{today}.json"
     file_entry = db.query(DBFile).filter(
         DBFile.userId == user.userId,
         DBFile.filename == filename
