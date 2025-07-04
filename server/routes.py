@@ -249,6 +249,7 @@ async def login(
     device_name: str = Form(None),
     device_type: str = Form(None)
 ) -> Dict[str, Any]:
+    logger.info(f"[LOGIN] Login attempt with device_id={device_id}, device_name={device_name}, device_type={device_type}")
     """Authenticate a user, register the calling device and bootstrap a
     `<device_id>.json` tracking file that will be kept in-sync by the
     `/device/heartbeat` endpoint.
@@ -266,54 +267,78 @@ async def login(
     device_name: str = form.get("device_name") or None
     device_type: str = form.get("device_type") or None
     device_uuid: str = form.get("device_id") or None  # client-provided stable id
+    
+    logger.info(f"[LOGIN] Form data - username: {username}, device_uuid: {device_uuid}, device_name: {device_name}, device_type: {device_type}")
 
     # Guard: we prefer explicit identification; if missing, generate placeholders
     if not device_uuid:
         # Fall back to generated uuid to avoid duplicates of "unknown_device"
         device_uuid = str(uuid.uuid4())
+        logger.info(f"[LOGIN] Generated new device_uuid: {device_uuid}")
     if not device_name:
         device_name = f"device_{device_uuid[:6]}"
+        logger.info(f"[LOGIN] Using generated device_name: {device_name}")
     if not device_type:
         device_type = "unknown_type"
+        logger.info(f"[LOGIN] Using default device_type: {device_type}")
 
     user = authenticate_user(db, username, password)
     if not user:
+        logger.warning(f"[LOGIN] Authentication failed for username: {username}")
         raise HTTPException(status_code=400, detail="Invalid credentials")
+        
+    logger.info(f"[LOGIN] User authenticated: user_id={user.userId}, username={user.username}")
 
     # ------------------------------------------------------------------
     # Register / update the device that is requesting the token
     # ------------------------------------------------------------------
+    logger.info(f"[LOGIN] Looking up device for user_id={user.userId}, device_uuid={device_uuid}")
+    
     device = None
     if device_uuid:
         device = db.query(Device).filter(
             Device.userId == user.userId,
             Device.device_uuid == device_uuid
         ).first()
-    if not device:
+        if device:
+            logger.info(f"[LOGIN] Found existing device by UUID: device_id={device.deviceId}, name={device.device_name}")
+    
+    if not device and device_name:
+        logger.info(f"[LOGIN] Device not found by UUID, trying by name: {device_name}")
         device = db.query(Device).filter(
             Device.userId == user.userId,
             Device.device_name == device_name
         ).first()
+        if device:
+            logger.info(f"[LOGIN] Found existing device by name: device_id={device.deviceId}, uuid={device.device_uuid}")
 
     if not device:
         device = Device(
             userId=user.userId,
+            device_uuid=device_uuid,
             device_name=device_name,
             device_type=device_type,
-            device_uuid=device_uuid,
+            last_seen=datetime.utcnow(),
+            online=True
         )
-        device.online = True
         db.add(device)
+        logger.info(f"[LOGIN] Created new device: {device.device_uuid} ({device.device_name})")
+    else:
+        # Update existing device with any new information
+        device.last_seen = datetime.utcnow()
+        device.online = True
+        device.device_type = device_type or device.device_type
+        device.device_name = device_name or device.device_name
+        logger.info(f"[LOGIN] Updated existing device: {device.device_uuid} (ID: {device.deviceId})")
+
+    try:
         db.commit()
         db.refresh(device)
-    else:
-        # Keep server-side name/type up-to-date in case they changed on client
-        device.device_name = device_name
-        device.device_type = device_type
-        device.online = True
-        if device_uuid and not device.device_uuid:
-            device.device_uuid = device_uuid
-        db.commit()
+        logger.info(f"[LOGIN] Device saved to database: {device.deviceId}")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[LOGIN] Failed to save device: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to register device")
 
     # ------------------------------------------------------------------
     # Create an initial per-device tracking file (<device_id>.json)
@@ -370,20 +395,35 @@ async def login(
     # ------------------------------------------------------------------
     # Generate the access token and respond
     # ------------------------------------------------------------------
+    token_expires_minutes = ACCESS_TOKEN_EXPIRE_MINUTES
+    access_token_expires = timedelta(minutes=token_expires_minutes)
+    token_data = {"sub": user.username, "user_id": str(user.userId), "device_id": str(device.deviceId) if device else None}
     access_token = create_access_token(
-        data={"sub": user.username},
-        expires_delta=ACCESS_TOKEN_EXPIRE_MINUTES
+        data=token_data,
+        expires_delta=access_token_expires
     )
+    
+    logger.info(f"[LOGIN] Generated access token for user_id={user.userId}, expires in {token_expires_minutes} minutes")
 
-    return {
+    response_data = {
         "access_token": access_token,
         "token_type": "bearer",
-        "expires_in": int(ACCESS_TOKEN_EXPIRE_MINUTES * 60),  # Convert minutes to seconds
-        "user_id": user.userId,
-        "username": user.username,
-        "role": "user",  # Default role, adjust as needed
-        "deviceId": device.deviceId
+        "expires_in": int(access_token_expires.total_seconds()),
+        "user": {
+            "id": str(user.userId),
+            "username": user.username,
+            "email": user.email,
+            "phone_number": user.phone_number,
+            "role": user.role
+        },
+        "device_id": str(device.deviceId) if device else None,
+        "device_uuid": device_uuid
     }
+    
+    logger.info(f"[LOGIN] Login successful for user_id={user.userId}, device_id={device.deviceId if device else 'none'}")
+    logger.debug(f"[LOGIN] Response data: {response_data}")
+    
+    return response_data
 
 
 @router.post(
@@ -1003,6 +1043,7 @@ def profile(current_user: User = Depends(get_current_user)):
 
 @router.post("/device/heartbeat")
 async def device_heartbeat(
+    request: Request,  # Add request parameter for logging
     device_id: str = Form(None),  # client stable UUID (device_uuid)
     device_name: str = Form(None),
     device_type: str = Form(None),
@@ -1013,25 +1054,47 @@ async def device_heartbeat(
     db: Session = Depends(get_db)
 ):
     now = datetime.utcnow()
+    logger.info(f"[HEARTBEAT] Received heartbeat from user_id={user.userId}, device_id={device_id}")
+    
+    # Log authentication token info
+    auth_header = request.headers.get('authorization')
+    if auth_header:
+        logger.info(f"[HEARTBEAT] Auth header present: {auth_header[:10]}..." if len(auth_header) > 10 else f"[HEARTBEAT] Auth header: {auth_header}")
+    else:
+        logger.warning("[HEARTBEAT] No authorization header found in request")
 
     # Resolve device record prioritising device_uuid when supplied
     device = None
     if device_id:
+        logger.info(f"[HEARTBEAT] Looking up device with user_id={user.userId}, device_uuid={device_id}")
         device = db.query(Device).filter(
             Device.userId == user.userId,
             Device.device_uuid == device_id
         ).first()
+        if device:
+            logger.info(f"[HEARTBEAT] Found device: device_id={device.deviceId}, name={device.device_name}, last_seen={device.last_seen}")
+        else:
+            logger.warning(f"[HEARTBEAT] No device found for user_id={user.userId} with device_uuid={device_id}")
+            # Log all devices for this user to help with debugging
+            user_devices = db.query(Device).filter(Device.userId == user.userId).all()
+            logger.info(f"[HEARTBEAT] User's devices: {[{'id': d.deviceId, 'uuid': d.device_uuid, 'name': d.device_name} for d in user_devices]}")
 
 
 
     # raise error if device not found
     if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
+        error_msg = f"Device not found for user_id={user.userId} with device_uuid={device_id}"
+        logger.error(f"[HEARTBEAT] {error_msg}")
+        raise HTTPException(status_code=404, detail=error_msg)
 
     # Update the last-seen timestamp
     device.last_seen = now
     device.online = True
+    device.device_name = device_name or device.device_name
+    device.device_type = device_type or device.device_type
     db.commit()
+    
+    logger.info(f"[HEARTBEAT] Updated device {device.deviceId} - last_seen={now}, online=True")
 
     # ------------------------------------------------------------------
     # Persist foreground context to the <device_id>_<timestamp>.json file
