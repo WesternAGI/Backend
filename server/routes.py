@@ -441,14 +441,17 @@ async def login(
         "access_token": access_token,
         "token_type": "bearer",
         "expires_in": int(access_token_expires.total_seconds()),
+        "user_id": user.userId,
+        "username": user.username,
+        "role": user.role,
+        "device_id": str(device.deviceId) if device else None,
+        "device_uuid": device_uuid,
         "user": {
             "id": str(user.userId),
             "username": user.username,
             "phone_number": user.phone_number,
             "role": user.role
-        },
-        "device_id": str(device.deviceId) if device else None,
-        "device_uuid": device_uuid
+        }
     }
     
     logger.info(f"[LOGIN] Login successful for user_id={user.userId}, device_id={device.deviceId if device else 'none'}")
