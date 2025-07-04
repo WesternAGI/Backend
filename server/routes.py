@@ -250,23 +250,158 @@ async def login(
     device_type: str = Form(None)
 ) -> Dict[str, Any]:
     logger.info(f"[LOGIN] Login attempt with device_id={device_id}, device_name={device_name}, device_type={device_type}")
-    """Authenticate a user, register the calling device and bootstrap a
-    `<device_id>.json` tracking file that will be kept in-sync by the
-    `/device/heartbeat` endpoint.
-
-    The request **MUST** be sent as a regular OAuth2 password flow form but can
-    optionally include the following extra form fields so we can properly
-    identify the client device:
-    - `device_name`: Human readable name (e.g. "John's MacBook")
-    - `device_type`: One of `mac_app`, `chrome_extension`, *etc.*
-    """
-    # Parse the oauth2 form manually so that we can grab the extra fields
-    form = await request.form()
-    username: str = form.get("username")
-    password: str = form.get("password")
-    device_name: str = form.get("device_name") or None
-    device_type: str = form.get("device_type") or None
-    device_uuid: str = form.get("device_id") or None  # client-provided stable id
+    logger.info(f"[LOGIN] Request URL: {request.url}")
+    logger.info(f"[LOGIN] Request headers: {dict(request.headers)}")
+    
+    try:
+        # Parse the oauth2 form manually so that we can grab the extra fields
+        form = await request.form()
+        logger.info(f"[LOGIN] Form data received: {dict(form)}")
+        
+        username: str = form.get("username")
+        password: str = form.get("password")
+        device_name: str = form.get("device_name") or None
+        device_type: str = form.get("device_type") or None
+        device_uuid: str = form.get("device_id") or device_id  # client-provided stable id
+        
+        logger.info(f"[LOGIN] Parsed credentials - username: {username}, device_uuid: {device_uuid}")
+        
+        if not username or not password:
+            error_msg = "Username and password are required"
+            logger.error(f"[LOGIN] {error_msg}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "Missing credentials",
+                    "message": error_msg,
+                    "hint": "Please provide both username and password"
+                }
+            )
+            
+        logger.info(f"[LOGIN] Attempting to authenticate user: {username}")
+        
+        # Get user from database
+        user = db.query(User).filter(User.username == username).first()
+        if not user:
+            error_msg = f"User not found: {username}"
+            logger.warning(f"[LOGIN] {error_msg}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "Authentication failed",
+                    "message": "Incorrect username or password",
+                    "hint": "Please check your credentials and try again"
+                }
+            )
+            
+        logger.info(f"[LOGIN] Found user in database: {user.userId}")
+        
+        # Verify password
+        if not verify_password(password, user.hashed_password):
+            error_msg = f"Invalid password for user: {username}"
+            logger.warning(f"[LOGIN] {error_msg}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "Authentication failed",
+                    "message": "Incorrect username or password",
+                    "hint": "Please check your credentials and try again"
+                }
+            )
+            
+        logger.info(f"[LOGIN] Password verified for user: {user.userId}")
+        
+        # Generate access token
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.username}, 
+            expires_delta=access_token_expires
+        )
+        
+        logger.info(f"[LOGIN] Generated access token for user: {user.userId}")
+        
+        # Update or create device record
+        if device_uuid:
+            try:
+                # Try to validate the device_uuid if it's provided
+                uuid.UUID(device_uuid)
+                
+                device = db.query(Device).filter(
+                    Device.userId == user.userId,
+                    Device.device_uuid == device_uuid
+                ).first()
+                
+                now = datetime.utcnow()
+                
+                if device:
+                    # Update existing device
+                    device.last_seen = now
+                    device.online = True
+                    if device_name:
+                        device.device_name = device_name
+                    if device_type:
+                        device.device_type = device_type
+                    logger.info(f"[LOGIN] Updated existing device: {device.deviceId} - {device.device_name}")
+                else:
+                    # Create new device
+                    device = Device(
+                        userId=user.userId,
+                        device_uuid=device_uuid,
+                        device_name=device_name or "Unknown Device",
+                        device_type=device_type or "unknown",
+                        last_seen=now,
+                        online=True
+                    )
+                    db.add(device)
+                    logger.info(f"[LOGIN] Created new device: {device_uuid} - {device_name or 'Unnamed Device'}")
+                
+                db.commit()
+                logger.info(f"[LOGIN] Device record {'created' if not device.deviceId else 'updated'} successfully")
+                
+            except ValueError as e:
+                logger.error(f"[LOGIN] Invalid device UUID format: {device_uuid} - {str(e)}")
+                # Don't fail the login, just log the error
+                device = None
+        else:
+            logger.warning("[LOGIN] No device_id provided in login request")
+            device = None
+        
+        # Prepare response
+        response_data = {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user_id": user.userId,
+            "username": user.username,
+            "device_id": device.device_uuid if device else None,
+            "device_name": device.device_name if device else None
+        }
+        
+        logger.info(f"[LOGIN] Login successful for user: {user.userId}")
+        return response_data
+        
+    except HTTPException as http_exc:
+        # Re-raise HTTP exceptions as they're already properly formatted
+        logger.error(f"[LOGIN] HTTP Exception: {str(http_exc)}")
+        raise http_exc
+        
+    except Exception as e:
+        # Log any unexpected errors
+        error_msg = f"Unexpected error during login: {str(e)}"
+        logger.error(f"[LOGIN] {error_msg}", exc_info=True)
+        
+        # Return a 500 error with detailed information in development
+        import traceback
+        error_detail = {
+            "error": "Internal Server Error",
+            "message": "An unexpected error occurred during login",
+            "detail": str(e),
+            "traceback": traceback.format_exc() if os.getenv("ENV") == "development" else None
+        }
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=error_detail
+        )
     
     logger.info(f"[LOGIN] Form data - username: {username}, device_uuid: {device_uuid}, device_name: {device_name}, device_type: {device_type}")
 
@@ -1147,24 +1282,38 @@ async def device_heartbeat(
             device.device_uuid = device_id  # Update to include the prefix
             db.commit()
     
-    if device:
-        logger.info(f"[HEARTBEAT] Found device: device_id={device.deviceId}, name={device.device_name}, last_seen={device.last_seen}")
-    else:
-        logger.warning(f"[HEARTBEAT] No device found for user_id={user.userId} with device_uuid={device_id}")
-        # Log all devices for this user to help with debugging
-        user_devices = db.query(Device).filter(Device.userId == user.userId).all()
-        logger.info(f"[HEARTBEAT] User's devices: {[{'id': d.deviceId, 'uuid': d.device_uuid, 'name': d.device_name} for d in user_devices]}")
+    if not device:
+        logger.info(f"[HEARTBEAT] No existing device found for user_id={user.userId} with device_uuid={device_id}, creating new device")
         
-        error_msg = f"Device not found for user_id={user.userId} with device_uuid={device_id}"
-        logger.error(f"[HEARTBEAT] {error_msg}")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={
-                "error": "Device not found",
-                "message": error_msg,
-                "hint": "The specified device ID was not found. Make sure the device is properly registered before sending heartbeats."
-            }
-        )
+        try:
+            # Create a new device record
+            device = Device(
+                userId=user.userId,
+                device_uuid=device_id,
+                device_name=device_name or f"Device_{device_id[:8]}",
+                device_type=device_type or "browser_extension",
+                last_seen=now,
+                online=True
+            )
+            db.add(device)
+            db.commit()
+            db.refresh(device)
+            
+            logger.info(f"[HEARTBEAT] Created new device: id={device.deviceId}, uuid={device.device_uuid}, name={device.device_name}")
+            
+        except Exception as e:
+            db.rollback()
+            error_msg = f"Failed to create new device: {str(e)}"
+            logger.error(f"[HEARTBEAT] {error_msg}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "error": "Device creation failed",
+                    "message": error_msg
+                }
+            )
+    else:
+        logger.info(f"[HEARTBEAT] Found device: device_id={device.deviceId}, name={device.device_name}, last_seen={device.last_seen}")
 
     # Update the last-seen timestamp
     device.last_seen = now
