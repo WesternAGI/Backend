@@ -444,7 +444,6 @@ async def login(
         "user": {
             "id": str(user.userId),
             "username": user.username,
-            "email": user.email,
             "phone_number": user.phone_number,
             "role": user.role
         },
