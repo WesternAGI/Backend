@@ -294,40 +294,72 @@ async def login(
     # ------------------------------------------------------------------
     logger.info(f"[LOGIN] Looking up device for user_id={user.userId}, device_uuid={device_uuid}")
     
-    device = None
-    if device_uuid:
-        device = db.query(Device).filter(
-            Device.userId == user.userId,
-            Device.device_uuid == device_uuid
-        ).first()
-        if device:
-            logger.info(f"[LOGIN] Found existing device by UUID: device_id={device.deviceId}, name={device.device_name}")
-    
-    if not device and device_name:
-        logger.info(f"[LOGIN] Device not found by UUID, trying by name: {device_name}")
-        device = db.query(Device).filter(
-            Device.userId == user.userId,
-            Device.device_name == device_name
-        ).first()
-        if device:
-            logger.info(f"[LOGIN] Found existing device by name: device_id={device.deviceId}, uuid={device.device_uuid}")
+    try:
+        device = None
+        
+        # First try to find by device_uuid if provided
+        if device_uuid:
+            device = db.query(Device).filter(
+                Device.userId == user.userId,
+                Device.device_uuid == device_uuid
+            ).first()
+            if device:
+                logger.info(f"[LOGIN] Found existing device by UUID: device_id={device.deviceId}, name={device.device_name}")
+        
+        # If not found by UUID, try by name
+        if not device and device_name:
+            logger.info(f"[LOGIN] Device not found by UUID, trying by name: {device_name}")
+            device = db.query(Device).filter(
+                Device.userId == user.userId,
+                Device.device_name == device_name
+            ).first()
+            if device:
+                logger.info(f"[LOGIN] Found existing device by name: device_id={device.deviceId}, uuid={device.device_uuid}")
 
-    if not device:
-        device = Device(
-            userId=user.userId,
-            device_uuid=device_uuid,
-            device_name=device_name,
-            device_type=device_type,
-            last_seen=datetime.utcnow(),
-            online=True
-        )
-        db.add(device)
-        logger.info(f"[LOGIN] Created new device: {device.device_uuid} ({device.device_name})")
-    else:
-        # Update existing device with any new information
-        device.last_seen = datetime.utcnow()
-        device.online = True
-        device.device_type = device_type or device.device_type
+        # If still not found, create a new device
+        if not device:
+            # Ensure device_uuid is unique
+            if device_uuid:
+                # Check if device_uuid already exists for another user
+                existing = db.query(Device).filter(
+                    Device.device_uuid == device_uuid,
+                    Device.userId != user.userId
+                ).first()
+                if existing:
+                    logger.warning(f"[LOGIN] Device UUID {device_uuid} already in use by another user")
+                    device_uuid = str(uuid.uuid4())  # Generate a new UUID
+                    logger.info(f"[LOGIN] Generated new UUID for device: {device_uuid}")
+            
+            device = Device(
+                userId=user.userId,
+                device_uuid=device_uuid,
+                device_name=device_name,
+                device_type=device_type,
+                last_seen=datetime.utcnow(),
+                online=True
+            )
+            db.add(device)
+            logger.info(f"[LOGIN] Created new device: {device.device_uuid} ({device.device_name})")
+        else:
+            # Update existing device with any new information
+            device.last_seen = datetime.utcnow()
+            device.online = True
+            device.device_type = device_type or device.device_type
+            
+            # If device_uuid was missing, update it
+            if not device.device_uuid and device_uuid:
+                device.device_uuid = device_uuid
+                
+        # Commit the device changes
+        db.commit()
+        db.refresh(device)
+        logger.info(f"[LOGIN] Device saved to database: {device.deviceId}")
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[LOGIN] Error updating device: {str(e)}", exc_info=True)
+        # Don't fail the login if device tracking fails
+        device = None
         device.device_name = device_name or device.device_name
         logger.info(f"[LOGIN] Updated existing device: {device.device_uuid} (ID: {device.deviceId})")
 
