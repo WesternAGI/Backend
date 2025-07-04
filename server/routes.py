@@ -437,20 +437,23 @@ async def login(
     
     logger.info(f"[LOGIN] Generated access token for user_id={user.userId}, expires in {token_expires_minutes} minutes")
 
+    # Convert role to string if it's an integer
+    role_str = str(user.role) if user.role is not None else "user"
+    
     response_data = {
         "access_token": access_token,
         "token_type": "bearer",
         "expires_in": int(access_token_expires.total_seconds()),
         "user_id": user.userId,
         "username": user.username,
-        "role": user.role,
+        "role": role_str,  # Ensure role is a string
         "device_id": str(device.deviceId) if device else None,
         "device_uuid": device_uuid,
         "user": {
             "id": str(user.userId),
             "username": user.username,
             "phone_number": user.phone_number,
-            "role": user.role
+            "role": role_str  # Ensure role is a string in the nested user object too
         }
     }
     
