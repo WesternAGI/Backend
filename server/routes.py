@@ -1080,7 +1080,7 @@ def profile(current_user: User = Depends(get_current_user)):
 
 @router.post("/device/heartbeat")
 async def device_heartbeat(
-    request: Request,  # Add request parameter for logging
+    request: Request,
     device_id: str = Form(None),  # client stable UUID (device_uuid)
     device_name: str = Form(None),
     device_type: str = Form(None),
@@ -1091,38 +1091,48 @@ async def device_heartbeat(
     db: Session = Depends(get_db)
 ):
     now = datetime.utcnow()
+    endpoint = "/device/heartbeat"
     logger.info(f"[HEARTBEAT] Received heartbeat from user_id={user.userId}, device_id={device_id}")
     
-    # Log authentication token info
-    auth_header = request.headers.get('authorization')
-    if auth_header:
-        logger.info(f"[HEARTBEAT] Auth header present: {auth_header[:10]}..." if len(auth_header) > 10 else f"[HEARTBEAT] Auth header: {auth_header}")
-    else:
-        logger.warning("[HEARTBEAT] No authorization header found in request")
-
+    # Check if device_id is missing
+    if not device_id:
+        error_msg = "device_id is required for heartbeat. Please include a valid device identifier."
+        logger.error(f"[HEARTBEAT] {error_msg}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "Missing device_id",
+                "message": error_msg,
+                "hint": "Make sure to include a valid device_id parameter with your request. This should be a stable, unique identifier for the device."
+            }
+        )
+    
     # Resolve device record prioritising device_uuid when supplied
     device = None
-    if device_id:
-        logger.info(f"[HEARTBEAT] Looking up device with user_id={user.userId}, device_uuid={device_id}")
-        device = db.query(Device).filter(
-            Device.userId == user.userId,
-            Device.device_uuid == device_id
-        ).first()
-        if device:
-            logger.info(f"[HEARTBEAT] Found device: device_id={device.deviceId}, name={device.device_name}, last_seen={device.last_seen}")
-        else:
-            logger.warning(f"[HEARTBEAT] No device found for user_id={user.userId} with device_uuid={device_id}")
-            # Log all devices for this user to help with debugging
-            user_devices = db.query(Device).filter(Device.userId == user.userId).all()
-            logger.info(f"[HEARTBEAT] User's devices: {[{'id': d.deviceId, 'uuid': d.device_uuid, 'name': d.device_name} for d in user_devices]}")
-
-
-
-    # raise error if device not found
-    if not device:
+    logger.info(f"[HEARTBEAT] Looking up device with user_id={user.userId}, device_uuid={device_id}")
+    device = db.query(Device).filter(
+        Device.userId == user.userId,
+        Device.device_uuid == device_id
+    ).first()
+    
+    if device:
+        logger.info(f"[HEARTBEAT] Found device: device_id={device.deviceId}, name={device.device_name}, last_seen={device.last_seen}")
+    else:
+        logger.warning(f"[HEARTBEAT] No device found for user_id={user.userId} with device_uuid={device_id}")
+        # Log all devices for this user to help with debugging
+        user_devices = db.query(Device).filter(Device.userId == user.userId).all()
+        logger.info(f"[HEARTBEAT] User's devices: {[{'id': d.deviceId, 'uuid': d.device_uuid, 'name': d.device_name} for d in user_devices]}")
+        
         error_msg = f"Device not found for user_id={user.userId} with device_uuid={device_id}"
         logger.error(f"[HEARTBEAT] {error_msg}")
-        raise HTTPException(status_code=404, detail=error_msg)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "Device not found",
+                "message": error_msg,
+                "hint": "The specified device ID was not found. Make sure the device is properly registered before sending heartbeats."
+            }
+        )
 
     # Update the last-seen timestamp
     device.last_seen = now
