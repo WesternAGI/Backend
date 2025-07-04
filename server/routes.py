@@ -1094,7 +1094,7 @@ async def device_heartbeat(
     endpoint = "/device/heartbeat"
     logger.info(f"[HEARTBEAT] Received heartbeat from user_id={user.userId}, device_id={device_id}")
     
-    # Check if device_id is missing
+    # Validate device_id
     if not device_id:
         error_msg = "device_id is required for heartbeat. Please include a valid device identifier."
         logger.error(f"[HEARTBEAT] {error_msg}")
@@ -1107,13 +1107,45 @@ async def device_heartbeat(
             }
         )
     
+    # Validate UUID format
+    try:
+        uuid.UUID(device_id)
+    except ValueError:
+        error_msg = f"Invalid device_id format. Expected a valid UUID, got: {device_id}"
+        logger.error(f"[HEARTBEAT] {error_msg}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "Invalid device_id format",
+                "message": error_msg,
+                "hint": "The device_id must be a valid UUID (e.g., '123e4567-e89b-12d3-a456-426614174000')"
+            }
+        )
+    
     # Resolve device record prioritising device_uuid when supplied
     device = None
     logger.info(f"[HEARTBEAT] Looking up device with user_id={user.userId}, device_uuid={device_id}")
+    
+    # First try exact match (for backward compatibility)
     device = db.query(Device).filter(
         Device.userId == user.userId,
         Device.device_uuid == device_id
     ).first()
+    
+    # If not found and device_id starts with 'chrome-', try without the prefix
+    if not device and device_id and device_id.startswith('chrome-'):
+        clean_device_id = device_id[7:]  # Remove 'chrome-' prefix
+        logger.info(f"[HEARTBEAT] Trying with cleaned device_id: {clean_device_id}")
+        device = db.query(Device).filter(
+            Device.userId == user.userId,
+            Device.device_uuid == clean_device_id
+        ).first()
+        
+        # If found with cleaned ID, update device_uuid to include the prefix for future requests
+        if device:
+            logger.info(f"[HEARTBEAT] Found device with cleaned ID, updating device_uuid to include prefix")
+            device.device_uuid = device_id  # Update to include the prefix
+            db.commit()
     
     if device:
         logger.info(f"[HEARTBEAT] Found device: device_id={device.deviceId}, name={device.device_name}, last_seen={device.last_seen}")
