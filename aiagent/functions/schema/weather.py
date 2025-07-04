@@ -1,4 +1,14 @@
+import requests
+from typing import Dict, Any
+from pydantic import BaseModel
 from utils.functions_metadata import function_schema
+
+
+class WeatherResponse(BaseModel):
+    location: str
+    forecast: str
+    success: bool
+    error: str = None
 
 
 @function_schema(
@@ -6,15 +16,34 @@ from utils.functions_metadata import function_schema
     description="Finds information the forecast of a specific location and provides a simple interpretation like, is going to rain, it's hot, it's super hot instead of warmer",
     required_params=["location"]
 )
-def get_weather_forecast(location):
+def get_weather_forecast(location: str) -> Dict[str, Any]:
     """
-    :param location: The location to get the weather forecast
+    Get weather forecast for a specific location.
+    
+    Args:
+        location: The location to get the weather forecast for
+        
+    Returns:
+        Dict containing the weather forecast information
     """
     url = f"http://wttr.in/{location}?format=3"
     try:
-        print("Called ")
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         response.raise_for_status()
-        return response.text
+        
+        # Clean up the response text
+        forecast = response.text.strip()
+        
+        return {
+            "location": location,
+            "forecast": forecast,
+            "success": True
+        }
+        
     except requests.RequestException as e:
-        return f"Error getting weather data: {e}"
+        return {
+            "location": location,
+            "forecast": "",
+            "success": False,
+            "error": f"Error getting weather data: {str(e)}"
+        }
