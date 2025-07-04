@@ -33,6 +33,7 @@ DEFAULT_DATA_PATH = os.path.join(_BOT_PATH, "data")
 
 from aiagent.memory.memory_manager import BaseMemoryManager, LongTermMemoryManager, ShortTermMemoryManager
 from aiagent.context.reference import read_references
+from aiagent.functions.registry import FunctionsRegistry
 
 
 def query_openai(
@@ -40,9 +41,7 @@ def query_openai(
     long_term_memory: LongTermMemoryManager,
     short_term_memory: ShortTermMemoryManager,
     max_tokens: int = 1024,
-    temperature: float = 0.7,
-    references: Dict[str, str] = {},
-    aux_data: Optional[Dict[str, Any]] = None
+    temperature: float = 0.7
 ) -> str:
     """Send a query to OPENAI's model with context.
 
@@ -54,7 +53,6 @@ def query_openai(
     Args:
         query: The user's question
         long_term_memory: User profile and preferences information
-        references: Dictionary of reference documents to include in context
         max_tokens: Maximum tokens in response (default: 1024)
         temperature: Response randomness (0-1, default: 0.7)
 
@@ -62,6 +60,13 @@ def query_openai(
         str: The AI's response, or an error message if the query fails.
     """
     try:
+
+        # Initialize the Functions Registry
+        tools = FunctionsRegistry()
+
+        # Get the callable functions from the registry
+        function_map = tools.get_function_callable()
+        
         # Initialize OpenAI client
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         if not client.api_key:
@@ -73,32 +78,21 @@ def query_openai(
         # json to string
         long_term_memory_content = long_term_memory.get_memory_content()
 
-        aux_data_str = json.dumps(aux_data if aux_data is not None else {})
+    
         
         past_conversations_data = short_term_memory.get("conversations")
         past_conversations = json.dumps(past_conversations_data if past_conversations_data is not None else [])
         
-        active_url_data = short_term_memory.get("active_url")
-        active_url = json.dumps(active_url_data if active_url_data is not None else {})
-
         messages.append(
-            {"role": "system", "content": "You are a personal assistant. The user is asking you a question. Answer briefly and concisely. If one sentence is enough, answer with one sentence. "},
+            {"role": "system", "content": "You are a personal assistant. The user is asking you a question. Answer briefly and concisely. "},
         )    
 
         messages.append(
-            {"role": "system", "content": f"Here are the current user details: {long_term_memory_content}\nAuxiliary Data: {aux_data_str}\nPast Conversations: {past_conversations}\nActive URL: {active_url}"}
+            {"role": "system", "content": f"Here are the current user details: {long_term_memory_content}\n\nPast Conversations: {past_conversations}\n"}
         )
 
          
 
-        # Add reference content to context
-        if references:
-            for filename, content in references.items():
-                messages.append(
-                    {
-                        "role": "system", "content": f"Reference - {filename}: {content[:500]}...",
-                    }
-                )
             
         # Add user query
         messages.append({"role": "user", "content": query})
@@ -112,11 +106,44 @@ def query_openai(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
+            tools=tools.mapped_functions(),
+            tool_choice="auto"
         )
 
+        response_message = response.choices[0].message
+        tool_calls = response_message.tool_calls
 
+        if tool_calls:
+            for tool_call in tool_calls:
+                function_name = tool_call.function.name
+                function_args = tool_call.function.arguments
+                function_result = tools.resolve_function(function_name, function_args)
+                messages.append({"role": "tool", "content": function_result})
+
+                if function_name in function_map:
+                    try:
+                        function_response = function_map[function_name](
+                            **function_args)
+                        messages.append({
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": function_name,
+                            "content": function_response,
+                        })
+                    except Exception as e:
+                        logging.error(f"Error in {function_name}: {e}")
+            response = client.chat.completions.create(
+                model=model_name, 
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools.mapped_functions(),
+                tool_choice="auto"
+            )
+            response_message = response.choices[0].message
+            
         # Extract and return the AI's response
-        if response.choices and response.choices[0].message:
+        if response_message:
             ai_content = response.choices[0].message.content
             finish_reason = response.choices[0].finish_reason
 

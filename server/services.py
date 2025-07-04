@@ -49,10 +49,6 @@ logger = logging.getLogger(__name__)
 # Initialize scheduler
 scheduler = None
 
-# Initialize assets folder
-ASSETS_FOLDER = "assets"
-os.makedirs(ASSETS_FOLDER, exist_ok=True)
-
 
 def get_status_message() -> str:
     """Generate a status message with current time and user count.
@@ -72,19 +68,6 @@ def get_status_message() -> str:
         db.close()
 
 
-def update_device_timestamps():
-    """Update the last seen timestamp of all devices."""
-    db = SessionLocal()
-    try:
-        # Update last_seen timestamp for all devices
-        db.query(Device).update({Device.last_seen: datetime.utcnow()})
-        db.commit()
-        logger.info("Updated device timestamps")
-    except Exception as e:
-        logger.error(f"Error updating device timestamps: {e}")
-        db.rollback()
-    finally:
-        db.close()
 
 
 def send_status(message: str = "", to_phone_number: str = ""):
@@ -119,7 +102,7 @@ def auto_disconnect_stale_devices():
             db.commit()
             user = db.query(User).filter(User.userId == device.userId).first()
             phone_number = user.phone_number
-            send_status(f"Device {device.deviceId} (UUID: {device.device_uuid}) last seen at {device.last_seen} is stale", to_phone_number = phone_number)
+            
             
         for device in stale_devices:
             logger.info(f"Device {device.deviceId} (UUID: {device.device_uuid}) last seen at {device.last_seen} is stale")
@@ -143,14 +126,7 @@ def start_scheduler():
     try:
         scheduler = BackgroundScheduler()
         
-        # Add jobs
-        scheduler.add_job(
-            update_device_timestamps,
-            trigger=IntervalTrigger(minutes=1),
-            id='update_device_timestamps_job',
-            name='Update device timestamps every minute',
-            replace_existing=True
-        )
+
         
         scheduler.add_job(
             send_status,
