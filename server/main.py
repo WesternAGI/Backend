@@ -173,16 +173,18 @@ async def global_logging_middleware(request: Request, call_next):
 
     try:
         response = await call_next(request)
-    except Exception as exc:
-        # Log exception and re-raise so default handler still runs
-        log_error(str(exc), exc, endpoint=endpoint)
-        raise
-    finally:
+        # Log response summary only if no exception occurred
         duration_ms = (perf_counter() - start) * 1000
-        # Log response summary
         status_code = getattr(response, "status_code", "<no response>")
         log_response(status_code, f"<{status_code}>" if status_code else "<unknown>", endpoint)
         app_logger.info("[PERF] %s %s completed in %.2f ms", request.method, endpoint, duration_ms)
+        return response
+    except Exception as exc:
+        # Log exception and re-raise so default handler still runs
+        log_error(str(exc), exc, endpoint=endpoint)
+        duration_ms = (perf_counter() - start) * 1000
+        app_logger.error("[ERROR] %s %s failed after %.2f ms: %s", request.method, endpoint, duration_ms, str(exc))
+        raise
 
     return response
 
