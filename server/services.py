@@ -87,12 +87,14 @@ def update_device_timestamps():
         db.close()
 
 
-def send_status():
+def send_status(message: str = "", to_phone_number: str = ""):
     """Send status update to all connected devices."""
     try:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        message = f"Thoth API Status: Running as of {current_time}"
-        recipient_phone = "+18073587137"  # Hardcoded E.164 format
+        default_message = f"Thoth API Status: Running as of {current_time}"
+        message = message or default_message
+        recipient_phone = "+18073587137" 
+        recipient_phone = to_phone_number or recipient_phone  # Hardcoded E.164 format
         success = send_twilio_message(recipient_phone, message)
         if not success:
             log_error(f"[send_status] Failed to send SMS to {recipient_phone}")
@@ -106,8 +108,8 @@ def auto_disconnect_stale_devices():
     """Log stale devices that haven't sent a heartbeat recently."""
     db = SessionLocal()
     try:
-        # Log devices that haven't been seen in the last 5 minutes
-        stale_time = datetime.utcnow() - timedelta(minutes=5)
+        # Log devices that haven't been seen in the last 1 minutes
+        stale_time = datetime.utcnow() - timedelta(minutes=1)
         stale_devices = db.query(Device).filter(Device.last_seen < stale_time).all()
         
         # Disconnect stale devices
@@ -115,6 +117,9 @@ def auto_disconnect_stale_devices():
             device.online = False
             db.add(device)
             db.commit()
+            user = db.query(User).filter(User.userId == device.userId).first()
+            phone_number = user.phone_number
+            send_status(f"Device {device.deviceId} (UUID: {device.device_uuid}) last seen at {device.last_seen} is stale", to_phone_number = phone_number)
             
         for device in stale_devices:
             logger.info(f"Device {device.deviceId} (UUID: {device.device_uuid}) last seen at {device.last_seen} is stale")

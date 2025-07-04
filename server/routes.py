@@ -1157,7 +1157,8 @@ async def list_devices(user: User = Depends(get_current_user), db: Session = Dep
 
         device_list = []
         for device in devices:
-            online = device.online
+            # Determine online status based on last_seen timestamp rather than the persisted boolean
+            online = bool(device.last_seen and device.last_seen >= threshold)
             device_list.append({
                 "deviceId": device.deviceId,
                 "name": device.device_name,
