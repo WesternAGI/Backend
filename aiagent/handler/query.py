@@ -41,7 +41,8 @@ def query_openai(
     long_term_memory: LongTermMemoryManager,
     short_term_memory: ShortTermMemoryManager,
     max_tokens: int = 1024,
-    temperature: float = 0.7
+    temperature: float = 0.7,
+    aux_data: Optional[Dict[str, Any]] = None
 ) -> str:
     """Send a query to OPENAI's model with context.
 
