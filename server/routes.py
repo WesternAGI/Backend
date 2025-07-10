@@ -41,6 +41,9 @@ import sys
 import os
 from pathlib import Path
 
+from twilio.twiml.voice_response import VoiceResponse
+
+
 # Add the project root to the Python path
 project_root = str(Path(__file__).parent.parent.absolute())
 if project_root not in sys.path:
@@ -1475,7 +1478,7 @@ async def handle_twilio_incoming_message(
     Body: str = Form(""),
     db: Session = Depends(get_db)
 ):
-    """Handle incoming SMS messages from Twilio and respond with AI-generated text.
+    """Handle incoming SMS messages from Twilio and forward them to the query endpoint.
     
     Args:
         request: The incoming HTTP request
@@ -1485,83 +1488,44 @@ async def handle_twilio_incoming_message(
     """
     # If From/Body not provided as parameters, try to get from form data
     form_data = await request.form()
-    from_number = From or form_data.get("From")
-    message_body = Body or form_data.get("Body", "")
+    from_number = From or form_data.get('From', '')
+    body = Body or form_data.get('Body', '').strip()
     
-    if not from_number:
-        raise HTTPException(status_code=400, detail="Missing 'From' parameter")
-        
-    client_host = request.client.host if request.client else "unknown_client"
-    endpoint_name = "/twilio/message"
-    log_request_start(endpoint_name, "POST", dict(request.headers), client_host)
-    #logger.info(f"[{endpoint_name}] Twilio Incoming SMS from {From}: {Body}")
-
-    normalized_from_number_str = re.sub(r'\D', '', from_number)
-    user_query_text = message_body
-    found_user: Optional[User] = None
-
-    if not normalized_from_number_str:
-        #logger.warning(f"[{endpoint_name}] Received empty or invalid 'From' number: {From}. Cannot look up user.")
-        twiml_response = "<Response><Message>Sorry, we could not identify your phone number.</Message></Response>"
-        log_response(200, twiml_response, endpoint_name)
-        return Response(content=twiml_response, media_type="application/xml", status_code=200)
-
-    try:
-        # Look up user by phone number
-        logger.info(f"[{endpoint_name}] Looking up user with phone number: {normalized_from_number_str}")
-        try:
-            phone_number_to_lookup = int(normalized_from_number_str)
-            found_user = db.query(User).filter(User.phone_number == phone_number_to_lookup).first()
-        except ValueError as ve:
-            logger.error(f"[{endpoint_name}] Invalid phone number format: {normalized_from_number_str}", exc_info=True)
-            return Response(
-                content="<Response><Message>Invalid phone number format.</Message></Response>",
-                media_type="application/xml",
-                status_code=200
-            )
-        
-        if not found_user:
-            logger.info(f"[{endpoint_name}] No user found for number: {normalized_from_number_str}")
-            return Response(
-                content="<Response><Message>Sorry, we couldn't find an account with this phone number.</Message></Response>",
-                media_type="application/xml",
-                status_code=200
-            )
-            
-        logger.info(f"[{endpoint_name}] Found user: {found_user.username} (ID: {found_user.userId})")
-        
-        # Extract the message body which contains the user's query
-        user_query_text = message_body.strip() if message_body else ""
-        
-        if not user_query_text:
-            logger.warning(f"[{endpoint_name}] Empty message body from user {found_user.userId}")
-            return Response(
-                content="<Response><Message>Please provide a message with your query.</Message></Response>",
-                media_type="application/xml",
-                status_code=200
-            )
-            
-    except Exception as e:
-        logger.error(f"[{endpoint_name}] Unexpected error during request processing: {str(e)}", exc_info=True)
-        return Response(
-            content="<Response><Message>An unexpected error occurred. Please try again later.</Message></Response>",
-            media_type="application/xml",
-            status_code=500
-        )
+    endpoint_name = "/api/webhooks/twilio/incoming-message"
+    log_request_start(endpoint_name, "POST", dict(request.headers), request.client.host if request.client else "unknown")
     
-    # If we get here, we have a valid user and query text
+    # Log the incoming message
+    logger.info(f"[{endpoint_name}] Incoming message from {from_number}: {body}")
+    
     try:
-        # Generate a chat ID for SMS conversations
-        chat_id = f"sms_{found_user.userId}_{int(datetime.utcnow().timestamp())}"
-        logger.info(f"[{endpoint_name}] Generated chat_id: {chat_id}")
+        # Normalize phone number (remove non-digits)
+        normalized_from = re.sub(r'\D', '', from_number)
         
+        # Find user by phone number
+        user = db.query(User).filter(User.phone_number == int(normalized_from)).first() if normalized_from.isdigit() else None
+        
+        if not user:
+            logger.warning(f"[{endpoint_name}] Unauthorized access attempt from {from_number}")
+            return Response(
+                content="<Response><Message>Unauthorized. Please register first.</Message></Response>",
+                media_type="application/xml",
+                status_code=200
+            )
+        
+        # Create a chat ID for this conversation
+        chat_id = f"sms_{normalized_from}"
+        user_query_text = body
+        
+        # Log the query
+        logger.info(f"[{endpoint_name}] Processing query from user {user.userId}: {user_query_text}")
+        
+        # Save the query to database
         try:
-            # Create a new query record in the database
-            logger.info(f"[{endpoint_name}] Creating new query record in database")
             db_query = Query(
-                userId=found_user.userId,
+                userId=user.userId,
                 chatId=chat_id,
-                query_text=user_query_text
+                query_text=user_query_text,
+                response=None  # Will be updated with AI response
             )
             db.add(db_query)
             db.commit()
@@ -1572,129 +1536,65 @@ async def handle_twilio_incoming_message(
             logger.error(f"[{endpoint_name}] Error creating query record: {str(e)}", exc_info=True)
             raise
 
-        # Initialize memory managers with default content if files don't exist
-        logger.info(f"[{endpoint_name}] Initializing memory managers")
-        short_term_memory = ShortTermMemoryManager()
-        long_term_memory = LongTermMemoryManager()
-        
-        # Try to load existing memory files if they exist
+        # Load conversation history
+        conversation_history = []
         try:
-            logger.info(f"[{endpoint_name}] Attempting to load memory files for user {found_user.userId}")
+            # Get recent messages for context
+            recent_messages = db.query(Query).filter(
+                Query.userId == user.userId,
+                Query.chatId == chat_id
+            ).order_by(Query.created_at.desc()).limit(5).all()
             
-            shortterm_file_db = db.query(DBFile).filter(
-                DBFile.userId == found_user.userId, 
-                DBFile.filename == "short_term_memory.json"
-            ).first()
-            logger.debug(f"[{endpoint_name}] Short-term memory file found: {shortterm_file_db is not None}")
+            # Reverse to get chronological order
+            for msg in reversed(recent_messages):
+                if msg.query_text:
+                    conversation_history.append({"role": "user", "content": msg.query_text})
+                if msg.response:
+                    conversation_history.append({"role": "assistant", "content": msg.response})
             
-            longterm_file_db = db.query(DBFile).filter(
-                DBFile.userId == found_user.userId, 
-                DBFile.filename == "long_term_memory.json"
-            ).first()
-            logger.debug(f"[{endpoint_name}] Long-term memory file found: {longterm_file_db is not None}")
-            
-            if shortterm_file_db and shortterm_file_db.content:
-                logger.debug(f"[{endpoint_name}] Loading short-term memory content")
-                shortterm_content = json.loads(shortterm_file_db.content.decode('utf-8'))
-                short_term_memory = ShortTermMemoryManager(memory_content=shortterm_content)
-                logger.info(f"[{endpoint_name}] Successfully loaded short-term memory")
-            else:
-                logger.info(f"[{endpoint_name}] No short-term memory content found, using default")
-                
-            if longterm_file_db and longterm_file_db.content:
-                logger.debug(f"[{endpoint_name}] Loading long-term memory content")
-                longterm_content = json.loads(longterm_file_db.content.decode('utf-8'))
-                long_term_memory = LongTermMemoryManager(memory_content=longterm_content)
-                logger.info(f"[{endpoint_name}] Successfully loaded long-term memory")
-            else:
-                logger.info(f"[{endpoint_name}] No long-term memory content found, using default")
-                
-        except json.JSONDecodeError as je:
-            logger.error(f"[{endpoint_name}] JSON decode error in memory files: {str(je)}", exc_info=True)
-            logger.error(f"[{endpoint_name}] Short-term content (truncated): {str(shortterm_file_db.content)[:200] if shortterm_file_db and shortterm_file_db.content else 'None'}")
-            logger.error(f"[{endpoint_name}] Long-term content (truncated): {str(longterm_file_db.content)[:200] if longterm_file_db and longterm_file_db.content else 'None'}")
+            logger.info(f"[{endpoint_name}] Loaded {len(conversation_history)} messages from history")
         except Exception as e:
-            logger.error(f"[{endpoint_name}] Error loading memory files: {str(e)}", exc_info=True)
-            logger.error(f"[{endpoint_name}] Error type: {type(e).__name__}")
-            logger.error(f"[{endpoint_name}] Error args: {e.args}")
-
-        try:
-            aux_data = {
-                "username": found_user.username,
-                "user_id": found_user.userId,
-                "chat_id": chat_id,
-                "query_id": db_query.queryId,
-                "client_info": {
-                    "max_tokens": 1024,
-                    "temperature": 0.7
-                }
-            }
-            logger.info(f"[{endpoint_name}] Created aux_data: {json.dumps(aux_data, default=str)}")
-        except Exception as e:
-            logger.error(f"[{endpoint_name}] Error creating aux_data: {str(e)}", exc_info=True)
-            raise
+            logger.error(f"[{endpoint_name}] Error loading conversation history: {str(e)}")
+            conversation_history = []
         
-        # references = read_references()
-
+        # Prepare the query for the /query endpoint
+        query_data = QueryRequest(
+            query=user_query_text,
+            chat_id=chat_id,
+            conversation_history=conversation_history,
+            user_id=user.userId
+        )
+        
+        # Call the query endpoint
         try:
-            logger.info(f"[{endpoint_name}] Calling AI query handler with query: {user_query_text}")
-            ai_response = ai_query_handler.query_openai(
-                query=user_query_text,
-                long_term_memory=long_term_memory,
-                short_term_memory=short_term_memory,
-                aux_data=aux_data,
-                max_tokens=aux_data["client_info"]["max_tokens"],
-                temperature=aux_data["client_info"]["temperature"],
-                # references=references,
+            logger.info(f"[{endpoint_name}] Forwarding query to /query endpoint")
+            # Call the query endpoint
+            ai_response = await query_endpoint(
+                query_data=query_data,
+                user=user,
+                db=db
             )
-            logger.info(f"[{endpoint_name}] Successfully received AI response")
-            log_ai_response(ai_response, endpoint_name)
-        except Exception as e:
-            logger.error(f"[{endpoint_name}] Error in AI query handler: {str(e)}", exc_info=True)
-            logger.error(f"[{endpoint_name}] Error type: {type(e).__name__}")
-            logger.error(f"[{endpoint_name}] Error args: {e.args}")
-            raise
-
-        try:
-            db_query.response = ai_response # Store AI response
-            db.commit()
-            logger.info(f"[{endpoint_name}] Successfully updated query with AI response")
-        except Exception as e:
-            logger.error(f"[{endpoint_name}] Error updating query with response: {str(e)}", exc_info=True)
-            db.rollback()
-            raise
-
-        if not ai_response.startswith("Error:"):
-            summary = ai_query_handler.summarize_conversation(user_query_text, ai_response)
-            updated_ltm = ai_query_handler.update_memory(user_query_text, ai_response, long_term_memory)
-
-            current_conversations = shortterm_content.get("conversations", [])
-            shortterm_content["conversations"] = current_conversations + [{
-                "query": user_query_text, "response": ai_response, "summary": summary
-            }]
-
-            # limit conversations to 20
-            if len(shortterm_content["conversations"]) > 20:
-                shortterm_content["conversations"] = shortterm_content["conversations"][-20:]
             
+            response_text = ai_response.response
+            logger.info(f"[{endpoint_name}] Received response from /query endpoint")
             
-            if shortterm_file_db:
-                shortterm_file_db.content = json.dumps(shortterm_content).encode('utf-8')
-                shortterm_file_db.size = len(shortterm_file_db.content)
-            else: # Should not happen if user registration creates it
-                #logger.warning(f"[{endpoint_name}] short_term_memory.json not found for user {user.userId}, creating new.")
-                # Create if missing logic might be needed here
-                pass 
-
-            if updated_ltm and longterm_file_db:
-                longterm_file_db.content = json.dumps(long_term_memory.get_content()).encode('utf-8')
-                longterm_file_db.size = len(longterm_file_db.content)
-                db.add(longterm_file_db)
+            # Update the query with the response
+            db_query.response = response_text
             db.commit()
-        
-        twiml_reply = f"<Response><Message>{ai_response}</Message></Response>"
-        log_response(200, "TwiML reply sent", endpoint_name)
-        return Response(content=twiml_reply, media_type="application/xml", status_code=200)
+            
+            # Format TwiML response
+            twiml_response = f"""
+            <Response>
+                <Message>{response_text}</Message>
+            </Response>
+            """
+            
+            log_response(200, "TwiML reply sent", endpoint_name)
+            return Response(
+                content=twiml_response.strip(),
+                media_type="application/xml",
+                status_code=200
+            )
 
     except Exception as e:
         #logger.error(f"[{endpoint_name}] Error processing AI query for SMS: {e}", exc_info=True)
@@ -1741,36 +1641,154 @@ async def handle_twilio_message_status(
 @router.post("/webhooks/twilio/incoming-call")
 async def handle_twilio_incoming_call(
     request: Request,
-    From: str = Form(...),
+    From: str = Form(None),
+    SpeechResult: str = Form(None),  # Speech-to-text result from Twilio
+    RecordingUrl: str = Form(None),  # URL of the recording if available
     db: Session = Depends(get_db)
 ):
-    normalized_from = re.sub(r"\D", "", From)
-    user = db.query(User).filter(User.phone_number == int(normalized_from)).first() if normalized_from.isdigit() else None
-
-    if not user:
-        twiml = """
-        <Response>
-            <Say voice="alice">Sorry, you are not recognized by Gad.</Say>
-            <Hangup/>
-        </Response>
-        """
-        return Response(content=twiml.strip(), media_type="application/xml", status_code=200)
-
-    username = user.username
-
-    twiml = f"""
-    <Response>
-        <Say voice="alice">Hi {username}, how can I help you today?</Say>
-        <Record 
-            action="/webhooks/twilio/incoming-call" 
-            transcribe="true"
-            transcribeCallback="/webhooks/twilio/transcription-callback"
-            maxLength="30"
-            timeout="5"
-            playBeep="true" />
-    </Response>
+    """Handle incoming calls from Twilio and respond with AI-generated speech.
+    
+    Args:
+        request: The incoming HTTP request
+        From: The caller's phone number (from Twilio form data)
+        SpeechResult: The transcribed text from the user's speech (if available)
+        RecordingUrl: URL of the recording (if available)
+        db: Database session
     """
-    return Response(content=twiml.strip(), media_type="application/xml", status_code=200)
+    endpoint_name = "/webhooks/twilio/incoming-call"
+    log_request_start(endpoint_name, "POST", dict(request.headers), request.client.host if request.client else "unknown")
+    
+    try:
+        # Normalize phone number (remove non-digits)
+        normalized_from = re.sub(r'\D', '', From) if From else ''
+        
+        # Find user by phone number
+        user = db.query(User).filter(User.phone_number == int(normalized_from)).first() if normalized_from and normalized_from.isdigit() else None
+        
+        # Create a voice response
+        resp = VoiceResponse()
+        
+        if not user:
+            logger.warning(f"[{endpoint_name}] Unauthorized access attempt from {From}")
+            resp.say("Sorry, you are not authorized to use this service. Please contact support for assistance.")
+            log_response(200, "Unauthorized response sent", endpoint_name)
+            return Response(content=str(resp), media_type="application/xml", status_code=200)
+        
+        # If this is a transcription callback with speech result
+        if SpeechResult:
+            logger.info(f"[{endpoint_name}] Processing speech input from user {user.userId}: {SpeechResult}")
+            
+            # Create a chat ID for this conversation
+            chat_id = f"call_{normalized_from}"
+            
+            # Save the query to database
+            try:
+                db_query = Query(
+                    userId=user.userId,
+                    chatId=chat_id,
+                    query_text=SpeechResult,
+                    response=None  # Will be updated with AI response
+                )
+                db.add(db_query)
+                db.commit()
+                db.refresh(db_query)
+                logger.info(f"[{endpoint_name}] Created query with ID: {db_query.queryId}")
+            except Exception as e:
+                logger.error(f"[{endpoint_name}] Error creating query record: {str(e)}", exc_info=True)
+                db.rollback()
+                resp.say("Sorry, there was an error processing your request.")
+                return Response(content=str(resp), media_type="application/xml", status_code=200)
+            
+            # Load conversation history
+            conversation_history = []
+            try:
+                # Get recent messages for context
+                recent_messages = db.query(Query).filter(
+                    Query.userId == user.userId,
+                    Query.chatId == chat_id
+                ).order_by(Query.created_at.desc()).limit(5).all()
+                
+                # Reverse to get chronological order
+                for msg in reversed(recent_messages):
+                    if msg.query_text:
+                        conversation_history.append({"role": "user", "content": msg.query_text})
+                    if msg.response:
+                        conversation_history.append({"role": "assistant", "content": msg.response})
+                
+                logger.info(f"[{endpoint_name}] Loaded {len(conversation_history)} messages from history")
+            except Exception as e:
+                logger.error(f"[{endpoint_name}] Error loading conversation history: {str(e)}")
+                conversation_history = []
+            
+            # Prepare the query for the /query endpoint
+            query_data = QueryRequest(
+                query=SpeechResult,
+                chat_id=chat_id,
+                conversation_history=conversation_history,
+                user_id=user.userId
+            )
+            
+            try:
+                # Call the query endpoint
+                logger.info(f"[{endpoint_name}] Forwarding query to /query endpoint")
+                ai_response = await query_endpoint(
+                    query_data=query_data,
+                    user=user,
+                    db=db
+                )
+                
+                response_text = ai_response.response
+                logger.info(f"[{endpoint_name}] Received response from /query endpoint")
+                
+                # Update the query with the response
+                db_query.response = response_text
+                db.commit()
+                
+                # Speak the response to the user
+                resp.say(response_text)
+                
+                # Ask if there's anything else we can help with
+                resp.say("Is there anything else I can help you with?")
+                
+                # Record the user's response
+                resp.record(
+                    action=f"/webhooks/twilio/incoming-call?From={From}",
+                    method="POST",
+                    finish_on_key="#",
+                    transcribe=True,
+                    transcribe_callback=f"/webhooks/twilio/incoming-call?From={From}"
+                )
+                
+                log_response(200, "AI response spoken to user", endpoint_name)
+                return Response(content=str(resp), media_type="application/xml", status_code=200)
+                
+            except Exception as e:
+                logger.error(f"[{endpoint_name}] Error calling /query endpoint: {str(e)}", exc_info=True)
+                db.rollback()
+                resp.say("I'm sorry, I encountered an error processing your request. Please try again later.")
+                return Response(content=str(resp), media_type="application/xml", status_code=200)
+        
+        # Initial greeting for new calls
+        logger.info(f"[{endpoint_name}] New call from user {user.userId} ({user.username})")
+        resp.say(f"Hello {user.username}, this is Gad's assistant. How can I help you today?")
+        
+        # Record the user's message
+        resp.record(
+            action=f"/webhooks/twilio/incoming-call?From={From}",
+            method="POST",
+            finish_on_key="#",
+            transcribe=True,
+            transcribe_callback=f"/webhooks/twilio/incoming-call?From={From}"
+        )
+        
+        log_response(200, "Initial greeting sent", endpoint_name)
+        return Response(content=str(resp), media_type="application/xml", status_code=200)
+        
+    except Exception as e:
+        logger.error(f"[{endpoint_name}] Unexpected error: {str(e)}", exc_info=True)
+        resp = VoiceResponse()
+        resp.say("I'm sorry, an unexpected error occurred. Please try your call again later.")
+        return Response(content=str(resp), media_type="application/xml", status_code=200)
 
 
 @router.post("/webhooks/twilio/transcription-callback")

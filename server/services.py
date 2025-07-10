@@ -82,7 +82,7 @@ def send_status(message: str = "", to_phone_number: str = ""):
         if not success:
             log_error(f"[send_status] Failed to send SMS to {recipient_phone}")
         else:
-            log_something(f"[send_status] SMS sent to {recipient_phone} at {current_time}")
+            log_something(f"[send_status] SMS sent to {recipient_phone} at {current_time}", endpoint="send_status")
     except Exception as e:
         log_error(f"[send_status] Error: {e}")
 
