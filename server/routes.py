@@ -370,8 +370,8 @@ async def login(
             logger.warning("[LOGIN] No device_id provided in login request")
             device = None
         
-        # Get user role (default to 'user' if not set)
-        user_role = getattr(user, 'role', 'user')
+        # Get user role (default to 'user' if not set) and ensure it's a string
+        user_role = str(getattr(user, 'role', 'user'))
         
         # Prepare response according to TokenResponse model
         response_data = {
@@ -380,7 +380,7 @@ async def login(
             "expires_in": int(access_token_expires.total_seconds()),
             "user_id": user.userId,
             "username": user.username,
-            "role": user_role,
+            "role": user_role,  # This is now guaranteed to be a string
             # These fields are not in the TokenResponse model but we'll keep them
             # for backward compatibility
             "device_id": device.device_uuid if device else None,
@@ -413,200 +413,6 @@ async def login(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=error_detail
         )
-    
-    logger.info(f"[LOGIN] Form data - username: {username}, device_uuid: {device_uuid}, device_name: {device_name}, device_type: {device_type}")
-
-    # Guard: we prefer explicit identification; if missing, generate placeholders
-    if not device_uuid:
-        # Fall back to generated uuid to avoid duplicates of "unknown_device"
-        device_uuid = str(uuid.uuid4())
-        logger.info(f"[LOGIN] Generated new device_uuid: {device_uuid}")
-    if not device_name:
-        device_name = f"device_{device_uuid[:6]}"
-        logger.info(f"[LOGIN] Using generated device_name: {device_name}")
-    if not device_type:
-        device_type = "unknown_type"
-        logger.info(f"[LOGIN] Using default device_type: {device_type}")
-
-    user = authenticate_user(db, username, password)
-    if not user:
-        logger.warning(f"[LOGIN] Authentication failed for username: {username}")
-        raise HTTPException(status_code=400, detail="Invalid credentials")
-        
-    logger.info(f"[LOGIN] User authenticated: user_id={user.userId}, username={user.username}")
-
-    # ------------------------------------------------------------------
-    # Register / update the device that is requesting the token
-    # ------------------------------------------------------------------
-    logger.info(f"[LOGIN] Looking up device for user_id={user.userId}, device_uuid={device_uuid}")
-    
-    try:
-        device = None
-        
-        # First try to find by device_uuid if provided
-        if device_uuid:
-            device = db.query(Device).filter(
-                Device.userId == user.userId,
-                Device.device_uuid == device_uuid
-            ).first()
-            if device:
-                logger.info(f"[LOGIN] Found existing device by UUID: device_id={device.deviceId}, name={device.device_name}")
-        
-        # If not found by UUID, try by name
-        if not device and device_name:
-            logger.info(f"[LOGIN] Device not found by UUID, trying by name: {device_name}")
-            device = db.query(Device).filter(
-                Device.userId == user.userId,
-                Device.device_name == device_name
-            ).first()
-            if device:
-                logger.info(f"[LOGIN] Found existing device by name: device_id={device.deviceId}, uuid={device.device_uuid}")
-
-        # If still not found, create a new device
-        if not device:
-            # Ensure device_uuid is unique
-            if device_uuid:
-                # Check if device_uuid already exists for another user
-                existing = db.query(Device).filter(
-                    Device.device_uuid == device_uuid,
-                    Device.userId != user.userId
-                ).first()
-                if existing:
-                    logger.warning(f"[LOGIN] Device UUID {device_uuid} already in use by another user")
-                    device_uuid = str(uuid.uuid4())  # Generate a new UUID
-                    logger.info(f"[LOGIN] Generated new UUID for device: {device_uuid}")
-            
-            device = Device(
-                userId=user.userId,
-                device_uuid=device_uuid,
-                device_name=device_name,
-                device_type=device_type,
-                last_seen=datetime.utcnow(),
-                online=True
-            )
-            db.add(device)
-            logger.info(f"[LOGIN] Created new device: {device.device_uuid} ({device.device_name})")
-        else:
-            # Update existing device with any new information
-            device.last_seen = datetime.utcnow()
-            device.online = True
-            device.device_type = device_type or device.device_type
-            
-            # If device_uuid was missing, update it
-            if not device.device_uuid and device_uuid:
-                device.device_uuid = device_uuid
-                
-        # Commit the device changes
-        db.commit()
-        db.refresh(device)
-        logger.info(f"[LOGIN] Device saved to database: {device.deviceId}")
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"[LOGIN] Error updating device: {str(e)}", exc_info=True)
-        # Don't fail the login if device tracking fails
-        device = None
-        device.device_name = device_name or device.device_name
-        logger.info(f"[LOGIN] Updated existing device: {device.device_uuid} (ID: {device.deviceId})")
-
-    try:
-        db.commit()
-        db.refresh(device)
-        logger.info(f"[LOGIN] Device saved to database: {device.deviceId}")
-    except Exception as e:
-        db.rollback()
-        logger.error(f"[LOGIN] Failed to save device: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to register device")
-
-    # ------------------------------------------------------------------
-    # Create an initial per-device tracking file (<device_id>.json)
-    # ------------------------------------------------------------------
-    today = datetime.now().strftime("%Y-%m-%d")
-    filename = f"{device.deviceId}_{today}.json"
-    file_entry = db.query(DBFile).filter(
-        DBFile.userId == user.userId,
-        DBFile.filename == filename
-    ).first()
-
-    if file_entry and file_entry.content:
-        try:
-            data = json.loads(file_entry.content.decode("utf-8"))
-        except Exception:
-            data = {"events": []}
-    else:
-        data = {
-            "deviceId": device.deviceId,
-            "device_name": device_name,
-            "device_type": device_type,
-            "events": []
-        }
-
-    # Append the current foreground information as a new event
-    data.setdefault("events", []).append({
-        "timestamp": datetime.utcnow().isoformat(),
-        "current_app": None,
-        "current_page": None,
-        "current_url": None
-    })
-
-    updated_bytes = json.dumps(data).encode("utf-8")
-
-    if file_entry:
-        file_entry.content = updated_bytes
-        file_entry.size = len(updated_bytes)
-        file_entry.file_hash = compute_sha256(updated_bytes)
-        file_entry.uploaded_at = datetime.utcnow()
-    else:
-        new_file = DBFile(
-            filename=filename,
-            userId=user.userId,
-            size=len(updated_bytes),
-            content=updated_bytes,
-            file_hash=compute_sha256(updated_bytes),
-            content_type="application/json",
-            uploaded_at=datetime.utcnow()
-        )
-        db.add(new_file)
-
-    db.commit()
-
-    # ------------------------------------------------------------------
-    # Generate the access token and respond
-    # ------------------------------------------------------------------
-    token_expires_minutes = ACCESS_TOKEN_EXPIRE_MINUTES
-    access_token_expires = timedelta(minutes=token_expires_minutes)
-    token_data = {"sub": user.username, "user_id": str(user.userId), "device_id": str(device.deviceId) if device else None}
-    access_token = create_access_token(
-        data=token_data,
-        expires_delta=access_token_expires
-    )
-    
-    logger.info(f"[LOGIN] Generated access token for user_id={user.userId}, expires in {token_expires_minutes} minutes")
-
-    # Convert role to string if it's an integer
-    role_str = str(user.role) if user.role is not None else "user"
-    
-    response_data = {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "expires_in": int(access_token_expires.total_seconds()),
-        "user_id": user.userId,
-        "username": user.username,
-        "role": role_str,  # Ensure role is a string
-        "device_id": str(device.deviceId) if device else None,
-        "device_uuid": device_uuid,
-        "user": {
-            "id": str(user.userId),
-            "username": user.username,
-            "phone_number": user.phone_number,
-            "role": role_str  # Ensure role is a string in the nested user object too
-        }
-    }
-    
-    logger.info(f"[LOGIN] Login successful for user_id={user.userId}, device_id={device.deviceId if device else 'none'}")
-    logger.debug(f"[LOGIN] Response data: {response_data}")
-    
-    return response_data
 
 
 @router.post(
