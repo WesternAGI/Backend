@@ -82,7 +82,7 @@ from fastapi import UploadFile
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import JSONResponse, FileResponse, Response, StreamingResponse
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, validator, HttpUrl, field_validator
 from typing import Dict, List, Optional, Any, Union
 
 # Application imports
@@ -1037,8 +1037,9 @@ class DeviceHeartbeatRequest(BaseModel):
     current_page: Optional[str] = None
     current_url: Optional[str] = None
 
-    @validator('device_id')
-    def validate_device_id(cls, v):
+    @field_validator('device_id')
+    @classmethod
+    def validate_device_id(cls, v: str) -> str:
         try:
             uuid.UUID(v)
             return v
