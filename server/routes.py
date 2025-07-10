@@ -1596,6 +1596,12 @@ async def handle_twilio_incoming_message(
                 status_code=200
             )
 
+        except Exception as e:
+            logger.error(f"[{endpoint_name}] Error calling /query endpoint: {str(e)}", exc_info=True)
+            db.rollback()
+            twiml_error_reply = "<Response><Message>Sorry, an internal error occurred while processing your message.</Message></Response>"
+            return Response(content=twiml_error_reply, media_type="application/xml", status_code=500)
+
     except Exception as e:
         #logger.error(f"[{endpoint_name}] Error processing AI query for SMS: {e}", exc_info=True)
         db.rollback() # Rollback any partial DB changes on error
