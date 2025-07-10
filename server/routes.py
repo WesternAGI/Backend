@@ -1308,7 +1308,7 @@ async def handle_twilio_incoming_message(
         Body: The message body (from Twilio form data)
         db: Database session
     """
-    # If From/Body not provided as parameters, try to get from form data
+    # Read form data once and store it
     form_data = await request.form()
     from_number = From or form_data.get('From', '')
     body = Body or form_data.get('Body', '').strip()
@@ -1356,6 +1356,7 @@ async def handle_twilio_incoming_message(
             log_ai_call(user_query_text, "default_sms_model", endpoint_name)
         except Exception as e:
             logger.error(f"[{endpoint_name}] Error creating query record: {str(e)}", exc_info=True)
+            db.rollback()
             raise
 
         # Load conversation history
@@ -1387,13 +1388,49 @@ async def handle_twilio_incoming_message(
             user_id=user.userId
         )
         
-        # Call the query endpoint
+        # Create a new request for the query endpoint
         try:
             logger.info(f"[{endpoint_name}] Forwarding query to /query endpoint")
-            # Call the query endpoint with the request object
+            
+            # Create a new request with the same data but as a JSON payload
+            # This avoids the stream consumption issue
+            from fastapi import Request as FastAPIRequest
+            from starlette.requests import Request as StarletteRequest
+            from starlette.datastructures import Headers
+            
+            # Create a new request with JSON payload
+            new_request = FastAPIRequest(
+                scope={
+                    "type": "http",
+                    "method": "POST",
+                    "path": "/query",
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"x-twilio-webhook", b"true"),
+                        (b"x-forwarded-for", request.headers.get("x-forwarded-for", b"").encode()),
+                    ],
+                    "query_string": b"",
+                    "client": request.scope.get("client", ("0.0.0.0", 0)),
+                    "server": request.scope.get("server", ("0.0.0.0", 0)),
+                },
+                receive=None,
+                send=None,
+                _cookies={},
+                _form=await request.form(),
+                _headers=Headers({
+                    "content-type": "application/json",
+                    "x-twilio-webhook": "true",
+                    **{k: v for k, v in request.headers.items() if k.lower() not in ["content-length", "content-type"]}
+                }),
+                _query_params=request.query_params,
+                _path_params={},
+                _cookies_dict={},
+            )
+            
+            # Call the query endpoint with the new request object
             ai_response = await query_endpoint(
                 query_data=query_data,
-                request=request,
+                request=new_request,
                 user=user,
                 db=db
             )
