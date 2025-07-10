@@ -1296,22 +1296,18 @@ async def list_devices(user: User = Depends(get_current_user), db: Session = Dep
 @router.post("/api/webhooks/twilio/incoming-message")
 async def handle_twilio_incoming_message(
     request: Request, 
-    From: str = Form(None), 
-    Body: str = Form(""),
     db: Session = Depends(get_db)
 ):
     """Handle incoming SMS messages from Twilio and forward them to the query endpoint.
     
     Args:
-        request: The incoming HTTP request
-        From: The sender's phone number (from Twilio form data)
-        Body: The message body (from Twilio form data)
+        request: The incoming HTTP request containing Twilio webhook data
         db: Database session
     """
-    # Read form data once and store it
+    # Parse the form data from the request
     form_data = await request.form()
-    from_number = From or form_data.get('From', '')
-    body = Body or form_data.get('Body', '').strip()
+    from_number = form_data.get('From', '')
+    body = form_data.get('Body', '').strip()
     
     endpoint_name = "/api/webhooks/twilio/incoming-message"
     log_request_start(endpoint_name, "POST", dict(request.headers), request.client.host if request.client else "unknown")
@@ -1380,50 +1376,41 @@ async def handle_twilio_incoming_message(
             logger.error(f"[{endpoint_name}] Error loading conversation history: {str(e)}")
             conversation_history = []
         
-        # Prepare the query for the /query endpoint
-        query_data = QueryRequest(
-            query=user_query_text,
-            chat_id=chat_id,
-            conversation_history=conversation_history,
-            user_id=user.userId
-        )
+        # Create a request object that will work with the query_endpoint
+        class JSONRequest:
+            def __init__(self, query_text, chat_id, conversation_history):
+                self._json = {
+                    "query": query_text,
+                    "chat_id": chat_id,
+                    "conversation_history": conversation_history,
+                    "user_id": user.userId
+                }
+                self.method = "POST"
+                self.headers = {"content-type": "application/json"}
+                self.url = "http://localhost/query"  # This is just a placeholder
+                
+            async def json(self):
+                return self._json
+                
+            def __getattr__(self, name):
+                # Default None for any other attributes that might be accessed
+                return None
         
-        # Create a new request for the query endpoint
+        # Create the JSON request
+        json_request = JSONRequest(user_query_text, chat_id, conversation_history)
+        
         try:
             logger.info(f"[{endpoint_name}] Forwarding query to /query endpoint")
             
-            # Instead of creating a new request, we'll create a simple object that has the methods we need
-            # This avoids the complexity of creating a proper Request object
-            class SimpleRequest:
-                def __init__(self, original_request, form_data):
-                    self.original_request = original_request
-                    self._form_data = form_data
-                    self.method = "POST"
-                    self.url = original_request.url
-                    self.headers = {
-                        "content-type": "application/json",
-                        "x-twilio-webhook": "true",
-                        **{k: v for k, v in original_request.headers.items() 
-                           if k.lower() not in ["content-length", "content-type"]}
-                    }
-                    
-                async def form(self):
-                    return self._form_data
-                    
-                async def json(self):
-                    raise RuntimeError("JSON not expected in this context")
-                    
-                def __getattr__(self, name):
-                    # Delegate any other attribute access to the original request
-                    return getattr(self.original_request, name)
-            
-            # Create a simple request wrapper
-            new_request = SimpleRequest(request, form_data)
-            
-            # Call the query endpoint with the new request object
+            # Call the query endpoint with the JSON request
             ai_response = await query_endpoint(
-                query_data=query_data,
-                request=new_request,
+                query_data=QueryRequest(
+                    query=user_query_text,
+                    chat_id=chat_id,
+                    conversation_history=conversation_history,
+                    user_id=user.userId
+                ),
+                request=json_request,
                 user=user,
                 db=db
             )
