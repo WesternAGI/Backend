@@ -370,12 +370,19 @@ async def login(
             logger.warning("[LOGIN] No device_id provided in login request")
             device = None
         
-        # Prepare response
+        # Get user role (default to 'user' if not set)
+        user_role = getattr(user, 'role', 'user')
+        
+        # Prepare response according to TokenResponse model
         response_data = {
             "access_token": access_token,
             "token_type": "bearer",
+            "expires_in": int(access_token_expires.total_seconds()),
             "user_id": user.userId,
             "username": user.username,
+            "role": user_role,
+            # These fields are not in the TokenResponse model but we'll keep them
+            # for backward compatibility
             "device_id": device.device_uuid if device else None,
             "device_name": device.device_name if device else None
         }
