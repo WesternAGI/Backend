@@ -1027,39 +1027,47 @@ def profile(current_user: User = Depends(get_current_user)):
 
 
 
-# --- Device Endpoints ---
+# --- Device Models ---
 
+class DeviceHeartbeatRequest(BaseModel):
+    device_id: str
+    device_name: Optional[str] = None
+    device_type: Optional[str] = None
+    current_app: Optional[str] = None
+    current_page: Optional[str] = None
+    current_url: Optional[str] = None
+
+    @validator('device_id')
+    def validate_device_id(cls, v):
+        try:
+            uuid.UUID(v)
+            return v
+        except ValueError:
+            raise ValueError("device_id must be a valid UUID")
+
+# --- Device Endpoints ---
 
 @router.post("/device/heartbeat")
 async def device_heartbeat(
     request: Request,
-    device_id: str = Form(None),  # client stable UUID (device_uuid)
-    device_name: str = Form(None),
-    device_type: str = Form(None),
-    current_app: str = Form(None),
-    current_page: str = Form(None),
-    current_url: str = Form(None),
+    heartbeat_data: DeviceHeartbeatRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     now = datetime.utcnow()
     endpoint = "/device/heartbeat"
+    
+    # Extract fields from the request model
+    device_id = heartbeat_data.device_id
+    device_name = heartbeat_data.device_name
+    device_type = heartbeat_data.device_type
+    current_app = heartbeat_data.current_app
+    current_page = heartbeat_data.current_page
+    current_url = heartbeat_data.current_url
+    
     logger.info(f"[HEARTBEAT] Received heartbeat from user_id={user.userId}, device_id={device_id}")
     
-    # Validate device_id
-    if not device_id:
-        error_msg = "device_id is required for heartbeat. Please include a valid device identifier."
-        logger.error(f"[HEARTBEAT] {error_msg}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "Missing device_id",
-                "message": error_msg,
-                "hint": "Make sure to include a valid device_id parameter with your request. This should be a stable, unique identifier for the device."
-            }
-        )
-    
-    # Validate UUID format
+    # Validate device_id (handled by Pydantic model, but keeping for safety)
     try:
         uuid.UUID(device_id)
     except ValueError:
