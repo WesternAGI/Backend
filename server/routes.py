@@ -1392,40 +1392,33 @@ async def handle_twilio_incoming_message(
         try:
             logger.info(f"[{endpoint_name}] Forwarding query to /query endpoint")
             
-            # Create a new request with the same data but as a JSON payload
-            # This avoids the stream consumption issue
-            from fastapi import Request as FastAPIRequest
-            from starlette.requests import Request as StarletteRequest
-            from starlette.datastructures import Headers
+            # Instead of creating a new request, we'll create a simple object that has the methods we need
+            # This avoids the complexity of creating a proper Request object
+            class SimpleRequest:
+                def __init__(self, original_request, form_data):
+                    self.original_request = original_request
+                    self._form_data = form_data
+                    self.method = "POST"
+                    self.url = original_request.url
+                    self.headers = {
+                        "content-type": "application/json",
+                        "x-twilio-webhook": "true",
+                        **{k: v for k, v in original_request.headers.items() 
+                           if k.lower() not in ["content-length", "content-type"]}
+                    }
+                    
+                async def form(self):
+                    return self._form_data
+                    
+                async def json(self):
+                    raise RuntimeError("JSON not expected in this context")
+                    
+                def __getattr__(self, name):
+                    # Delegate any other attribute access to the original request
+                    return getattr(self.original_request, name)
             
-            # Create a new request with JSON payload
-            new_request = FastAPIRequest(
-                scope={
-                    "type": "http",
-                    "method": "POST",
-                    "path": "/query",
-                    "headers": [
-                        (b"content-type", b"application/json"),
-                        (b"x-twilio-webhook", b"true"),
-                        (b"x-forwarded-for", request.headers.get("x-forwarded-for", b"").encode()),
-                    ],
-                    "query_string": b"",
-                    "client": request.scope.get("client", ("0.0.0.0", 0)),
-                    "server": request.scope.get("server", ("0.0.0.0", 0)),
-                },
-                receive=None,
-                send=None,
-                _cookies={},
-                _form=await request.form(),
-                _headers=Headers({
-                    "content-type": "application/json",
-                    "x-twilio-webhook": "true",
-                    **{k: v for k, v in request.headers.items() if k.lower() not in ["content-length", "content-type"]}
-                }),
-                _query_params=request.query_params,
-                _path_params={},
-                _cookies_dict={},
-            )
+            # Create a simple request wrapper
+            new_request = SimpleRequest(request, form_data)
             
             # Call the query endpoint with the new request object
             ai_response = await query_endpoint(
