@@ -1575,9 +1575,10 @@ async def handle_twilio_incoming_message(
         # Call the query endpoint
         try:
             logger.info(f"[{endpoint_name}] Forwarding query to /query endpoint")
-            # Call the query endpoint
+            # Call the query endpoint with the request object
             ai_response = await query_endpoint(
                 query_data=query_data,
+                request=request,
                 user=user,
                 db=db
             )
