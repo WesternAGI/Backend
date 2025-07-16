@@ -87,7 +87,7 @@ from typing import Dict, List, Optional, Any, Union
 
 # Application imports
 from . import services
-from .utils import compute_sha256
+from server.utils import compute_sha256
 from .db import User, File as DBFile, Query, Device, Session, SessionLocal
 from .auth import (
     get_db, 
@@ -1468,7 +1468,7 @@ async def handle_twilio_message_status(
         From: The sender phone number (optional)
         ErrorCode: Error code if message failed (optional)
     """
-    endpoint = "/twilio/status"
+    endpoint = "/api/webhooks/twilio/message-status"
     client_host = request.client.host if request.client else "unknown_client"
     log_request_start(endpoint, "POST", dict(request.headers), client_host)
     
@@ -1479,7 +1479,7 @@ async def handle_twilio_message_status(
     if ErrorCode:
         logger.error(f"Message {MessageSid} failed with error code: {ErrorCode}")
     
-    log_response(200, "OK", "/twilio/status")
+    log_response(200, "OK", endpoint)
     return {"status": "ok"}
 
 
