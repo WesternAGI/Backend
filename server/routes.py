@@ -1449,7 +1449,7 @@ async def handle_twilio_incoming_message(
         return Response(content=twiml_error_reply, media_type="application/xml", status_code=500)
 
 
-@router.post("/twilio/message-status")
+@router.post("/api/webhooks/twilio/message-status")
 async def handle_twilio_message_status(
     request: Request, 
     MessageSid: str = Form(...), 
