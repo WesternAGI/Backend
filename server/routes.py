@@ -1415,7 +1415,7 @@ async def handle_twilio_incoming_message(
                 db=db
             )
             
-            response_text = ai_response.response
+            response_text = ai_response.get("response", "Sorry, I couldn't process your request at the moment.")
             logger.info(f"[{endpoint_name}] Received response from /query endpoint")
             
             # Update the query with the response
