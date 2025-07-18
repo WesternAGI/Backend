@@ -59,49 +59,80 @@ def query_openai(
 
     Returns:
         str: The AI's response, or an error message if the query fails.
-    """
-    try:
+    # """
+    # try:
 
-        # Initialize the Functions Registry
-        tools = FunctionsRegistry()
+    # Initialize the Functions Registry
+    tools = FunctionsRegistry()
 
-        # Get the callable functions from the registry
-        function_map = tools.get_function_callable()
-        
-        # Initialize OpenAI client
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        if not client.api_key:
-            return "Error: No OpenAI API key found. Set OPENAI_API_KEY in .env"
+    # Get the callable functions from the registry
+    function_map = tools.get_function_callable()
+    
+    # Initialize OpenAI client
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    if not client.api_key:
+        return "Error: No OpenAI API key found. Set OPENAI_API_KEY in .env"
 
-        # Build context messages from long-term memory
-        messages = []
+    # Build context messages from long-term memory
+    messages = []
 
-        # json to string
-        long_term_memory_content = long_term_memory.get_memory_content()
+    # json to string
+    long_term_memory_content = long_term_memory.get_memory_content()
+
 
     
+    past_conversations_data = short_term_memory.get("conversations")
+    past_conversations = json.dumps(past_conversations_data if past_conversations_data is not None else [])
+    
+    messages.append(
+        {"role": "system", "content": "You are a personal assistant. The user is asking you a question. Answer briefly and concisely. "},
+    )    
+
+    messages.append(
+        {"role": "system", "content": f"Here are the current user details: {long_term_memory_content}\n\nPast Conversations: {past_conversations}\n"}
+    )
+
         
-        past_conversations_data = short_term_memory.get("conversations")
-        past_conversations = json.dumps(past_conversations_data if past_conversations_data is not None else [])
+
         
-        messages.append(
-            {"role": "system", "content": "You are a personal assistant. The user is asking you a question. Answer briefly and concisely. "},
-        )    
+    # Add user query
+    messages.append({"role": "user", "content": query})
 
-        messages.append(
-            {"role": "system", "content": f"Here are the current user details: {long_term_memory_content}\n\nPast Conversations: {past_conversations}\n"}
-        )
+    #logging.info(f"Context messages: {messages}")
+    
+    # Query OPENAI
+    model_name = os.getenv("MODEL_NAME")
+    response = client.chat.completions.create(
+        model=model_name, 
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        tools=tools.mapped_functions(),
+        tool_choice="auto"
+    )
 
-         
+    response_message = response.choices[0].message
+    tool_calls = response_message.tool_calls
 
-            
-        # Add user query
-        messages.append({"role": "user", "content": query})
+    if tool_calls:
+        for tool_call in tool_calls:
+            function_name = tool_call.function.name
+            function_args = tool_call.function.arguments
+            function_result = tools.resolve_function(function_name, function_args)
+            messages.append({"role": "tool", "content": function_result})
 
-        #logging.info(f"Context messages: {messages}")
-        
-        # Query OPENAI
-        model_name = os.getenv("MODEL_NAME")
+            if function_name in function_map:
+                try:
+                    function_response = function_map[function_name](
+                        **function_args)
+                    messages.append({
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": function_name,
+                        "content": function_response,
+                    })
+                except Exception as e:
+                    logging.error(f"Error in {function_name}: {e}")
         response = client.chat.completions.create(
             model=model_name, 
             messages=messages,
@@ -110,61 +141,30 @@ def query_openai(
             tools=tools.mapped_functions(),
             tool_choice="auto"
         )
-
         response_message = response.choices[0].message
-        tool_calls = response_message.tool_calls
+        
+    # Extract and return the AI's response
+    if response_message:
+        ai_content = response.choices[0].message.content
+        finish_reason = response.choices[0].finish_reason
 
-        if tool_calls:
-            for tool_call in tool_calls:
-                function_name = tool_call.function.name
-                function_args = tool_call.function.arguments
-                function_result = tools.resolve_function(function_name, function_args)
-                messages.append({"role": "tool", "content": function_result})
-
-                if function_name in function_map:
-                    try:
-                        function_response = function_map[function_name](
-                            **function_args)
-                        messages.append({
-                            "tool_call_id": tool_call.id,
-                            "role": "tool",
-                            "name": function_name,
-                            "content": function_response,
-                        })
-                    except Exception as e:
-                        logging.error(f"Error in {function_name}: {e}")
-            response = client.chat.completions.create(
-                model=model_name, 
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                tools=tools.mapped_functions(),
-                tool_choice="auto"
-            )
-            response_message = response.choices[0].message
-            
-        # Extract and return the AI's response
-        if response_message:
-            ai_content = response.choices[0].message.content
-            finish_reason = response.choices[0].finish_reason
-
-            if ai_content is not None:
-                #logging.info("Received response content from OPENAI.")
-                return ai_content
-            else:
-                # Content is None, log finish_reason and the message object
-                logging.error(
-                    f"OPENAI response error: Message content is None. Finish reason: '{finish_reason}'. Message: {response.choices[0].message.model_dump_json()}"
-                )
-                return f"Error querying AI: OPENAI response message content is None. Finish reason: {finish_reason}."
+        if ai_content is not None:
+            #logging.info("Received response content from OPENAI.")
+            return ai_content
         else:
-            # Message object itself is None or no choices
-            #logging.error(f"OPENAI response error: No choices or message object found. Full response: {response.model_dump_json()}")
-            return "Error querying AI: No choices or message object returned from OPENAI."
+            # Content is None, log finish_reason and the message object
+            logging.error(
+                f"OPENAI response error: Message content is None. Finish reason: '{finish_reason}'. Message: {response.choices[0].message.model_dump_json()}"
+            )
+            return f"Error querying AI: OPENAI response message content is None. Finish reason: {finish_reason}."
+    else:
+        # Message object itself is None or no choices
+        #logging.error(f"OPENAI response error: No choices or message object found. Full response: {response.model_dump_json()}")
+        return "Error querying AI: No choices or message object returned from OPENAI."
 
-    except Exception as e:
-        #logging.error(f"Error querying OPENAI: {e}", exc_info=True)
-        return f"Error querying AI: {str(e)}"
+    # except Exception as e:
+    #     #logging.error(f"Error querying OPENAI many info)
+    #     return f"Error querying AI: {str(e)} - {e} - {e.__str__()}"
 
 
 def summarize_conversation(query: str, response: str) -> str:
