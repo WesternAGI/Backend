@@ -1,7 +1,7 @@
 import requests
 from typing import Dict, Any
 from pydantic import BaseModel
-from utils.functions_metadata import function_schema
+from server.utils.functions_metadata import function_schema
 
 
 class WeatherResponse(BaseModel):

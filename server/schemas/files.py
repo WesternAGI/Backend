@@ -23,7 +23,7 @@ class FileUploadResponse(BaseModel):
     size: int = Field(..., example=1024, description="File size in bytes")
     hash: str = Field(..., example="a1b2c3d4e5f6...", 
                      description="SHA-256 hash of the file contents")
-    file_name: str = Field(..., example="document.pdf", 
+    filename: str = Field(..., example="document.pdf",
                           description="Original name of the uploaded file")
     content_type: Optional[str] = Field(None, example="application/pdf",
                                       description="MIME type of the file")
@@ -35,7 +35,7 @@ class FileUploadResponse(BaseModel):
                 "file_id": 123,
                 "size": 1024,
                 "hash": "a1b2c3d4e5f6...",
-                "file_name": "document.pdf",
+                "filename": "document.pdf",
                 "content_type": "application/pdf"
             }
         }

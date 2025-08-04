@@ -28,6 +28,7 @@ class LoginRequest(BaseModel):
     """Request model for user login."""
     username: str = Field(..., example="johndoe")
     password: str = Field(..., example="securepassword123")
+    device_id: Optional[str] = Field(None, example="device-12345")
     device_name: Optional[str] = Field(None, example="John's iPhone")
     device_type: Optional[str] = Field(None, example="ios")
 

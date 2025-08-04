@@ -7,10 +7,11 @@ This module handles all aspects of user authentication including:
 - Dependency injection for database and current user
 """
 
+import logging
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 from datetime import datetime, timedelta
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -120,7 +121,11 @@ def authenticate_user(db: Session, username: str, password: str) -> Optional[Use
     # Successful authentication
     return user
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+async def get_current_user(
+    request: Request,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+) -> User:
     """Get the current authenticated user from a JWT token.
     
     This function is used as a FastAPI dependency to inject the current user
@@ -137,7 +142,17 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         HTTPException: 401 error if token is invalid or user doesn't exist
     """
     credentials_exception = HTTPException(status_code=401, detail="Invalid credentials")
+    # Log the raw Authorization header for debugging auth failures
+    logging.getLogger("lms.server").debug(
+        "[AUTH] get_current_user Authorization header: %s",
+        request.headers.get("Authorization"),
+    )
     try:
+        # Log the token value (truncated) for debugging
+        logging.getLogger("lms.server").debug(
+            "[AUTH] Decoding token: %s...",
+            token[:10] + '...' if token else None,
+        )
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username = payload.get("sub")
         if username is None:

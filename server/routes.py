@@ -17,6 +17,8 @@ import logging
 import json
 import uuid
 import mimetypes
+import base64
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Union
 from urllib.parse import quote
@@ -76,7 +78,8 @@ from fastapi import (
     status,
     Path,
     Body,
-    Header
+    Header,
+    Depends
 )
 from fastapi import UploadFile
 from fastapi.security import OAuth2PasswordRequestForm
@@ -89,6 +92,8 @@ from typing import Dict, List, Optional, Any, Union
 from . import services
 from server.utils import compute_sha256
 from .db import User, File as DBFile, Query, Device, Session, SessionLocal
+from pathlib import Path
+import os
 from .auth import (
     get_db, 
     get_password_hash, 
@@ -101,6 +106,16 @@ from .auth import (
 
 # Import schemas
 from .schemas.health import HealthCheckResponse
+from pydantic import BaseModel
+from typing import Optional
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+    device_id: Optional[str] = None
+    device_name: Optional[str] = None
+    device_type: Optional[str] = None
 from .schemas import (
     RegisterRequest, 
     RegisterResponse, 
@@ -247,26 +262,19 @@ async def register(
 )
 async def login(
     request: Request, 
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db),
-    device_id: str = Form(None),
-    device_name: str = Form(None),
-    device_type: str = Form(None)
+    login_data: LoginRequest,
+    db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
-    logger.info(f"[LOGIN] Login attempt with device_id={device_id}, device_name={device_name}, device_type={device_type}")
+    logger.info(f"[LOGIN] Login attempt with device_id={login_data.device_id}, device_name={login_data.device_name}, device_type={login_data.device_type}")
     logger.info(f"[LOGIN] Request URL: {request.url}")
     logger.info(f"[LOGIN] Request headers: {dict(request.headers)}")
     
     try:
-        # Parse the oauth2 form manually so that we can grab the extra fields
-        form = await request.form()
-        logger.info(f"[LOGIN] Form data received: {dict(form)}")
-        
-        username: str = form.get("username")
-        password: str = form.get("password")
-        device_name: str = form.get("device_name") or None
-        device_type: str = form.get("device_type") or None
-        device_uuid: str = form.get("device_id") or device_id  # client-provided stable id
+        username = login_data.username
+        password = login_data.password
+        device_name = login_data.device_name
+        device_type = login_data.device_type
+        device_uuid = login_data.device_id  # client-provided stable id
         
         logger.info(f"[LOGIN] Parsed credentials - username: {username}, device_uuid: {device_uuid}")
         
@@ -415,44 +423,138 @@ async def login(
         )
 
 
+class FileUploadRequest(BaseModel):
+    filename: str
+    content_type: str
+    content: str  # Encoded file content
+    size: int
+    file_hash: Optional[str] = None
+    is_base64_encoded: bool = True
+
 @router.post(
     "/upload",
     response_model=FileUploadResponse,
-    status_code=status.HTTP_201_CREATED,
+    status_code=status.HTTP_200_OK,
     summary="Upload a file",
-    description="Upload a file to the server. The file will be associated with the authenticated user's account.",
+    description="Upload a file to the server",
     tags=["files"],
     responses={
-        400: {"description": "File too large or invalid"},
+        400: {"description": "Invalid file or upload failed"},
         401: {"description": "Not authenticated"},
-        500: {"description": "Upload failed"}
+        413: {"description": "File too large"}
     }
 )
 async def upload_file(
-    file: UploadFile = File(..., description="The file to upload"),
+    file_data: FileUploadRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
+    logger.info(f"[UPLOAD] Starting file upload for user {user.userId}")
+    logger.debug(f"[UPLOAD] File info - Name: {file_data.filename}, Size: {file_data.size} bytes")
+    logger.debug(f"[UPLOAD] Content type: {file_data.content_type}")
+    
     try:
-        contents = await file.read()
+        # Check if file with same hash already exists for this user (if provided)
+        if file_data.file_hash:
+            existing_file = db.query(DBFile).filter(
+                DBFile.userId == user.userId,
+                DBFile.file_hash == file_data.file_hash
+            ).first()
+            
+            if existing_file:
+                # Update the existing file's metadata
+                existing_file.filename = file_data.filename
+                existing_file.content_type = file_data.content_type
+                existing_file.size = file_data.size
+                existing_file.last_modified = datetime.utcnow()
+                db.commit()
+                
+                return {
+                    "status": "success",
+                    "message": "File already exists with same content",
+                    "fileId": existing_file.fileId,
+                    "filename": existing_file.filename,
+                    "size": existing_file.size,
+                    "file_hash": existing_file.file_hash
+                }
+        
+        # Log database connection status
+        # Verify database connectivity; if unavailable, fall back to filesystem storage
+        db_available = True
+        try:
+            from sqlalchemy import text
+            db.execute(text("SELECT 1")).scalar()
+            logger.debug("[UPLOAD] Database connection verified")
+        except Exception as db_err:
+            db_available = False
+            logger.warning(f"[UPLOAD] Database unavailable, falling back to file storage: {db_err}")
+        
+        # Decode content (base64 for binary files, raw for text)
+        logger.debug("[UPLOAD] Processing uploaded content")
+        decode_start = time.time()
+        try:
+            if file_data.is_base64_encoded:
+                contents = base64.b64decode(file_data.content)
+            else:
+                contents = file_data.content.encode('utf-8')
+            decode_time = time.time() - decode_start
+            logger.debug(f"[UPLOAD] Content processed in {decode_time:.2f}s, size: {len(contents)} bytes")
+        except Exception as decode_err:
+            logger.error(f"[UPLOAD] Failed to process content: {str(decode_err)}", exc_info=True)
+            raise HTTPException(status_code=400, detail="Invalid file content encoding") from decode_err
+
         file_size = len(contents)
-        file_hash = compute_sha256(contents)
+        logger.debug(f"[UPLOAD] Processing file of size: {file_size} bytes")
+        
+        # Compute file hash
+        hash_start = time.time()
+        try:
+            file_hash = compute_sha256(contents)
+            hash_time = time.time() - hash_start
+            logger.debug(f"[UPLOAD] File hash computed in {hash_time:.2f}s: {file_hash}")
+        except Exception as hash_err:
+            logger.error(f"[UPLOAD] Failed to compute file hash: {str(hash_err)}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to process file") from hash_err
 
-        # Use user's configured max file size if present, otherwise fall back to 500 MB.
+        # Check file size limit
         max_file_size = user.max_file_size or 524_288_000  # 500 MB default
+        logger.debug(f"[UPLOAD] Max allowed file size: {max_file_size} bytes")
+        
         if file_size > max_file_size:
-            raise HTTPException(status_code=400, detail="File too large")
+            error_msg = f"File size {file_size} exceeds maximum allowed size {max_file_size}"
+            logger.warning(f"[UPLOAD] {error_msg}")
+            raise HTTPException(status_code=400, detail=error_msg)
 
-        existing = db.query(DBFile).filter(
-            DBFile.userId == user.userId,
-            DBFile.filename == file.filename
-        ).first()
+        # Check for existing file
+        logger.debug(f"[UPLOAD] Checking for existing file with name: {file_data.filename}")
+        db_query_start = time.time()
+        try:
+            existing = db.query(DBFile).filter(
+                DBFile.userId == user.userId,
+                DBFile.filename == file_data.filename
+            ).first()
+            db_query_time = time.time() - db_query_start
+            logger.debug(f"[UPLOAD] Database query completed in {db_query_time:.2f}s")
+            if existing:
+                logger.debug(f"[UPLOAD] Found existing file with ID: {existing.fileId}")
+            else:
+                logger.debug("[UPLOAD] No existing file found with this name")
+        except Exception as query_err:
+            logger.error(f"[UPLOAD] Database query failed: {str(query_err)}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Database error") from query_err
 
-        content_type = mimetypes.guess_type(file.filename)[0] or "application/octet-stream"
+        content_type = mimetypes.guess_type(file_data.filename)[0] or "application/octet-stream"
 
-        if existing:
+        if db_available and existing:
+            logger.debug("[UPLOAD] Handling existing file update in database")
             if existing.file_hash == file_hash:
-                return {"message": "File already exists", "fileId": existing.fileId}
+                return {
+                    "message": "File already exists",
+                    "file_id": existing.fileId,
+                    "filename": existing.filename,
+                    "size": existing.size,
+                    "hash": existing.file_hash
+                }
             else:
                 existing.content = contents
                 existing.size = file_size
@@ -460,28 +562,64 @@ async def upload_file(
                 existing.uploaded_at = datetime.utcnow()
                 existing.content_type = content_type
                 db.commit()
-                return {"message": "File updated", "fileId": existing.fileId}
+                return {
+                    "message": "File updated",
+                    "file_id": existing.fileId,
+                    "filename": existing.filename,
+                    "size": existing.size,
+                    "hash": existing.file_hash
+                }
 
-        # New file
-        new_file = DBFile(
-            filename=file.filename,
-            userId=user.userId,
-            size=file_size,
-            content=contents,
-            file_hash=file_hash,
-            content_type=content_type,
-            uploaded_at=datetime.utcnow()
-        )
+        # New file or fallback storage
+        if db_available:
+            logger.debug("[UPLOAD] Creating new file record in database")
+            try:
+                new_file = DBFile(
+                    filename=file_data.filename,
+                    userId=user.userId,
+                    size=file_size,
+                    content=contents,
+                    file_hash=file_hash,
+                    content_type=content_type,
+                    uploaded_at=datetime.utcnow()
+                )
+                db_start = time.time()
+                db.add(new_file)
+                db.commit()
+                db.refresh(new_file)
+                db_time = time.time() - db_start
+                logger.debug(f"[UPLOAD] Database operation completed in {db_time:.2f}s, new file ID: {new_file.fileId}")
+                return {
+                    "message": "File uploaded",
+                    "file_id": new_file.fileId,
+                    "filename": new_file.filename,
+                    "size": new_file.size,
+                    "hash": new_file.file_hash
+                }
+            except Exception as db_err:
+                logger.error(f"[UPLOAD] Failed to save file to database: {db_err}", exc_info=True)
+                db.rollback()
+                # Fall back to filesystem storage
+                db_available = False
+                logger.warning("[UPLOAD] Falling back to file storage due to DB save failure")
 
-        db.add(new_file)
-        db.commit()
-        db.refresh(new_file)
-
+        # Filesystem fallback storage
+        storage_root = Path(os.getenv('FILE_STORAGE_DIR', 'uploaded_files'))
+        storage_root.mkdir(parents=True, exist_ok=True)
+        dest = storage_root / f"{user.userId}_{file_data.filename}"
+        try:
+            with open(dest, 'wb') as f:
+                f.write(contents)
+            logger.info(f"[UPLOAD] File stored on filesystem at {dest}")
+        except Exception as fs_err:
+            logger.error(f"[UPLOAD] Filesystem write failed: {fs_err}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to store file") from fs_err
         return {
-            "message": "File uploaded",
-            "fileId": new_file.fileId,
-            "size": new_file.size,
-            "hash": new_file.file_hash
+            "message": "File uploaded (filesystem fallback)",
+            "filename": file_data.filename,
+            "size": file_size,
+            "hash": file_hash,
+            "path": str(dest)
         }
 
     except Exception as e:
@@ -893,7 +1031,9 @@ def list_files(user: User = Depends(get_current_user), db: SessionLocal = Depend
                 "fileId": file.fileId,
                 "filename": file.filename,
                 "size": file.size,
-                "uploaded_at": file.uploaded_at
+                "uploaded_at": file.uploaded_at.isoformat() if file.uploaded_at else None,
+                "file_hash": file.file_hash,
+                "last_modified": file.last_modified.isoformat() if file.last_modified else None
             } for file in files
         ]
         
@@ -1029,6 +1169,17 @@ def profile(current_user: User = Depends(get_current_user)):
 
 # --- Device Models ---
 
+class DeviceBase(BaseModel):
+    device_id: str
+    device_name: Optional[str] = None
+    device_type: Optional[str] = None
+    
+    @validator('device_id')
+    def validate_device_id(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Device ID is required")
+        return v.strip()
+
 class DeviceHeartbeatRequest(BaseModel):
     device_id: str
     device_name: Optional[str] = None
@@ -1036,15 +1187,23 @@ class DeviceHeartbeatRequest(BaseModel):
     current_app: Optional[str] = None
     current_page: Optional[str] = None
     current_url: Optional[str] = None
-
-    @field_validator('device_id')
-    @classmethod
-    def validate_device_id(cls, v: str) -> str:
+    
+    @validator('device_id')
+    def validate_device_id(cls, v):
         try:
             uuid.UUID(v)
             return v
         except ValueError:
-            raise ValueError("device_id must be a valid UUID")
+            # If not a UUID, check if it's a Chrome extension ID (alphanumeric 32 chars)
+            if len(v) == 32 and v.isalnum():
+                return v
+            # Special case for 'chrome-extension://' prefixed IDs
+            if v.startswith('chrome-extension://'):
+                return v
+            raise ValueError('device_id must be a valid UUID or Chrome extension ID')
+
+class DeviceLogoutRequest(DeviceBase):
+    pass
 
 # --- Device Endpoints ---
 
@@ -1055,100 +1214,183 @@ async def device_heartbeat(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    now = datetime.utcnow()
+    """Handle device heartbeat with detailed logging and validation.
+    
+    This endpoint is called periodically by client devices to indicate they are still active.
+    It updates the device's last_seen timestamp and can track the current app/page/URL.
+    """
+    start_time = datetime.utcnow()
     endpoint = "/device/heartbeat"
+    logger = logging.getLogger('thoth')
     
-    # Extract fields from the request model
-    device_id = heartbeat_data.device_id
-    device_name = heartbeat_data.device_name
-    device_type = heartbeat_data.device_type
-    current_app = heartbeat_data.current_app
-    current_page = heartbeat_data.current_page
-    current_url = heartbeat_data.current_url
+    # Log incoming request with all relevant context
+    logger.info(
+        "[HEARTBEAT] Received from user_id=%s, device_id=%s, app=%s, page=%s",
+        user.userId,
+        heartbeat_data.device_id,
+        heartbeat_data.current_app or 'unknown',
+        heartbeat_data.current_page or 'unknown'
+    )
     
-    logger.info(f"[HEARTBEAT] Received heartbeat from user_id={user.userId}, device_id={device_id}")
-    
-    # Validate device_id (handled by Pydantic model, but keeping for safety)
     try:
-        uuid.UUID(device_id)
-    except ValueError:
-        error_msg = f"Invalid device_id format. Expected a valid UUID, got: {device_id}"
-        logger.error(f"[HEARTBEAT] {error_msg}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "Invalid device_id format",
-                "message": error_msg,
-                "hint": "The device_id must be a valid UUID (e.g., '123e4567-e89b-12d3-a456-426614174000')"
-            }
+        # Extract fields from the request model
+        device_id = heartbeat_data.device_id
+        device_name = heartbeat_data.device_name
+        device_type = heartbeat_data.device_type
+        current_app = heartbeat_data.current_app
+        current_page = heartbeat_data.current_page
+        current_url = heartbeat_data.current_url
+        
+        # Log detailed request info for debugging
+        logger.debug(
+            "[HEARTBEAT] Request details - device_name=%s, device_type=%s, url=%s",
+            device_name, device_type, current_url
         )
-    
-    # Resolve device record prioritising device_uuid when supplied
-    device = None
-    logger.info(f"[HEARTBEAT] Looking up device with user_id={user.userId}, device_uuid={device_id}")
-    
-    # First try exact match (for backward compatibility)
-    device = db.query(Device).filter(
-        Device.userId == user.userId,
-        Device.device_uuid == device_id
-    ).first()
-    
-    # If not found and device_id starts with 'chrome-', try without the prefix
-    if not device and device_id and device_id.startswith('chrome-'):
-        clean_device_id = device_id[7:]  # Remove 'chrome-' prefix
-        logger.info(f"[HEARTBEAT] Trying with cleaned device_id: {clean_device_id}")
+        
+        # Resolve device record prioritizing device_uuid
+        device = None
+        
+        # First try exact match (for backward compatibility)
         device = db.query(Device).filter(
             Device.userId == user.userId,
-            Device.device_uuid == clean_device_id
+            Device.device_uuid == device_id
         ).first()
+        
+        # If not found and device_id starts with 'chrome-', try without the prefix
+        if not device and device_id and device_id.startswith('chrome-'):
+            clean_device_id = device_id[7:]  # Remove 'chrome-' prefix
+            logger.debug("Trying with cleaned device_id: %s", clean_device_id)
+            device = db.query(Device).filter(
+                Device.userId == user.userId,
+                Device.device_uuid == clean_device_id
+            ).first()
         
         # If found with cleaned ID, update device_uuid to include the prefix for future requests
         if device:
-            logger.info(f"[HEARTBEAT] Found device with cleaned ID, updating device_uuid to include prefix")
-            device.device_uuid = device_id  # Update to include the prefix
+            logger.info("Found device with cleaned ID, updating to include prefix")
+            device.device_uuid = device_id  # Update to include prefix
             db.commit()
-    
-    if not device:
-        logger.info(f"[HEARTBEAT] No existing device found for user_id={user.userId} with device_uuid={device_id}, creating new device")
+            
+        # If still not found, create a new device record
+        if not device:
+            logger.info("Creating new device record for device_id: %s", device_id)
+            try:
+                device = Device(
+                    userId=user.userId,
+                    device_uuid=device_id,
+                    device_name=device_name or f"Device-{str(uuid.uuid4())[:8]}",
+                    device_type=device_type or "unknown",
+                    last_seen=start_time,
+                    created_at=start_time,
+                    updated_at=start_time
+                )
+                db.add(device)
+                db.commit()
+                db.refresh(device)
+                logger.info("Created new device with ID: %s", device.id)
+            except Exception as e:
+                db.rollback()
+                logger.error("Failed to create device record: %s", str(e), exc_info=True)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={
+                        "error": "Failed to create device record",
+                        "message": str(e)
+                    }
+                )
         
         try:
-            # Create a new device record
-            device = Device(
-                userId=user.userId,
-                device_uuid=device_id,
-                device_name=device_name or f"Device_{device_id[:8]}",
-                device_type=device_type or "browser_extension",
-                last_seen=now,
-                online=True
-            )
-            db.add(device)
-            db.commit()
-            db.refresh(device)
+            # Update device info and last_seen timestamp
+            logger.debug("Updating device %s last_seen timestamp", device.deviceId)
+            device.last_seen = start_time
+            if device_name:
+                device.device_name = device_name
+            if device_type:
+                device.device_type = device_type
             
-            logger.info(f"[HEARTBEAT] Created new device: id={device.deviceId}, uuid={device.device_uuid}, name={device.device_name}")
+            # Update online status based on last_seen
+            time_since_last_seen = (datetime.utcnow() - device.last_seen).total_seconds()
+            device.online = time_since_last_seen < 300  # 5 minutes
+            
+            db.commit()
+            
+            # Log the update
+            logger.info(
+                "[HEARTBEAT] Updated device %s (last_seen=%s, online=%s)",
+                device.deviceId,
+                device.last_seen.isoformat(),
+                device.online
+            )
+            
+            # # Create or update device activity
+            # activity = db.query(DeviceActivity).filter(
+            #     DeviceActivity.device_id == device.deviceId,
+            #     func.date(DeviceActivity.activity_date) == start_time.date()
+            # ).first()
+            
+            # if activity:
+            #     activity.activity_count += 1
+            #     activity.last_activity = start_time
+            #     activity.updated_at = start_time
+            # else:
+            #     activity = DeviceActivity(
+            #         device_id=device.deviceId,
+            #         activity_date=start_time.date(),
+            #         activity_count=1,
+            #         last_activity=start_time,
+            #         created_at=start_time,
+            #         updated_at=start_time
+            #     )
+            #     db.add(activity)
+            
+            # db.commit()
+            
+            # Calculate processing time
+            processing_time = (datetime.utcnow() - start_time).total_seconds() * 1000
+            
+            # Log successful heartbeat with performance metrics
+            logger.info(
+                "Heartbeat processed for device %s (user_id=%s) in %.2f ms",
+                device.deviceId,
+                user.userId,
+                processing_time
+            )
+            
+            return {
+                "status": "success",
+                "message": "Heartbeat received",
+                "device_id": str(device.deviceId),
+                "timestamp": start_time.isoformat(),
+                "processing_time_ms": round(processing_time, 2)
+            }
             
         except Exception as e:
-            db.rollback()
-            error_msg = f"Failed to create new device: {str(e)}"
-            logger.error(f"[HEARTBEAT] {error_msg}", exc_info=True)
+            # Log the error with device context
+            logger.error(
+                "[HEARTBEAT] Error updating device %s: %s",
+                device.deviceId if device and hasattr(device, 'deviceId') else 'unknown',
+                str(e),
+                exc_info=True
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={
-                    "error": "Device creation failed",
-                    "message": error_msg
+                    "error": "Failed to update device activity",
+                    "message": str(e)
                 }
             )
-    else:
-        logger.info(f"[HEARTBEAT] Found device: device_id={device.deviceId}, name={device.device_name}, last_seen={device.last_seen}")
-
-    # Update the last-seen timestamp
-    device.last_seen = now
-    device.online = True
-    device.device_name = device_name or device.device_name
-    device.device_type = device_type or device.device_type
-    db.commit()
-    
-    logger.info(f"[HEARTBEAT] Updated device {device.deviceId} - last_seen={now}, online=True")
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error("Unexpected error in device_heartbeat: %s", str(e), exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "Internal server error",
+                "message": "An unexpected error occurred"
+            }
+        )
 
     # ------------------------------------------------------------------
     # Persist foreground context to the <device_id>_<timestamp>.json file
@@ -1227,13 +1469,21 @@ async def device_heartbeat(
     }
 
 
-@router.post("/device/logout")
+@router.post(
+    "/device/logout",
+    response_model=Dict[str, Any],
+    status_code=status.HTTP_200_OK,
+    summary="Logout device",
+    description="Mark a device as logged out",
+    tags=["devices"]
+)
 async def device_logout(
-    device_id: str = Form(None),
-    device_name: str = Form(None),
+    logout_data: DeviceLogoutRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    device_id = logout_data.device_id
+    device_name = logout_data.device_name
     # Resolve device record prioritising device_uuid when supplied
     device = None
     if device_id:
@@ -1262,13 +1512,24 @@ async def device_logout(
 
 
 @router.get("/devices")
-async def list_devices(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def list_devices(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
     """List all devices registered for the authenticated user.
 
     A device is considered **online** if its `last_seen` timestamp is within
     the last five minutes. Otherwise, it's treated as offline.
     """
     try:
+        # Log the incoming request and authenticated user for debugging
+        logger.debug("[DEVICES] Incoming headers: %s", dict(request.headers))
+        logger.info(
+            "[DEVICES] Listing devices for user '%s' (userId=%s)",
+            user.username,
+            user.userId,
+        )
         threshold = datetime.utcnow() - timedelta(minutes=5)
         devices = db.query(Device).filter(Device.userId == user.userId).all()
 

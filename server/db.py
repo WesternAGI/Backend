@@ -180,6 +180,8 @@ class Device(Base):
     """Relationship to the User who owns this device"""
     file_device_updates = relationship("FileDeviceUpdate", back_populates="device")
     """Relationship to FileDeviceUpdate objects for this device"""
+    activities = relationship("DeviceActivity", back_populates="device")
+    """Relationship to DeviceActivity objects for this device"""
 
 
 class FileDeviceUpdate(Base):
@@ -197,6 +199,24 @@ class FileDeviceUpdate(Base):
     """Relationship to the File that this update is for"""
     device = relationship("Device", back_populates="file_device_updates")
     """Relationship to the Device that this update is for"""
+
+
+class DeviceActivity(Base):
+    """Model for tracking device activity and usage statistics."""
+    __tablename__ = "device_activity"
+    
+    activity_id = Column(Integer, primary_key=True, autoincrement=True, index=True)
+    device_id = Column(Integer, ForeignKey("device.device_id"), nullable=False)
+    activity_date = Column(DateTime, default=datetime.utcnow, nullable=False)
+    activity_duration = Column(Integer, default=0)  # in seconds
+    last_activity = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    device = relationship("Device", back_populates="activities")
+    
+    __table_args__ = (
+        UniqueConstraint('device_id', 'activity_date', name='_device_date_uc'),
+    )
 
 
 # DO NOT run migrations or create tables at import time in serverless environments!

@@ -1,12 +1,117 @@
-from fastapi import FastAPI, Request, Response, status
+import logging
+import sys
+import traceback
+from time import perf_counter
+from fastapi import FastAPI, Request, Response, status, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.openapi.utils import get_openapi
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Callable
 from pathlib import Path
 import os
+import json
 from server.routes import router
+from server.utils.logging_utils import (
+    log_request_start, 
+    log_response,
+    log_error,
+    log_request_payload
+)
+
+# Create logs directory if it doesn't exist
+log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
+os.makedirs(log_dir, exist_ok=True)
+
+# Configure root logger
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.DEBUG)
+
+# Clear any existing handlers
+for handler in root_logger.handlers[:]:
+    root_logger.removeHandler(handler)
+    handler.close()
+
+# Custom formatter that handles missing request_id
+class RequestIdFormatter(logging.Formatter):
+    def format(self, record):
+        if not hasattr(record, 'request_id'):
+            record.request_id = 'NO_REQUEST_ID'
+        return super().format(record)
+
+# Create formatters
+file_formatter = RequestIdFormatter(
+    '%(asctime)s - %(name)s - %(levelname)s - [%(request_id)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+console_formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'
+)
+
+# File handler for all logs
+file_handler = logging.FileHandler(os.path.join(log_dir, 'server.log'))
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(file_formatter)
+
+# Console handler for WARNING and above
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(console_formatter)
+
+# Add handlers to root logger
+root_logger.addHandler(file_handler)
+root_logger.addHandler(console_handler)
+
+# Create app logger
+app_logger = logging.getLogger('thoth')
+app_logger.setLevel(logging.DEBUG)
+
+# Add custom filter to ensure request_id is set
+class RequestIdFilter(logging.Filter):
+    def __init__(self, request_id='NO_REQUEST_ID'):
+        super().__init__()
+        self.request_id = request_id
+        
+    def filter(self, record):
+        if not hasattr(record, 'request_id'):
+            record.request_id = self.request_id
+        return True
+
+# Configure app logger with custom formatter
+formatter = RequestIdFormatter(
+    '%(asctime)s - %(name)s - %(levelname)s - [%(request_id)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+# Create a default request ID filter
+default_filter = RequestIdFilter()
+
+# Configure file handler for the app logger
+file_handler = logging.FileHandler(os.path.join(log_dir, 'thoth.log'))
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(formatter)
+file_handler.addFilter(default_filter)
+
+# Configure console handler for the app logger
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(console_formatter)
+console_handler.addFilter(default_filter)
+
+# Clear existing handlers and add the new ones
+app_logger.handlers = [file_handler, console_handler]
+
+# Set propagate to False to prevent duplicate logs
+app_logger.propagate = False
+
+# Log startup information
+app_logger.info("=" * 80)
+app_logger.info("Starting Thoth Backend Server")
+app_logger.info(f"Python version: {sys.version}")
+app_logger.info(f"Working directory: {os.getcwd()}")
+app_logger.info(f"Log directory: {log_dir}")
+app_logger.info("=" * 80)
 
 # Application metadata
 APP_TITLE = "AI-Powered Backend API"
@@ -145,48 +250,80 @@ from server.utils.logging_utils import (
 @app.middleware("http")
 async def global_logging_middleware(request: Request, call_next):
     """Middleware that logs every request and response with latency."""
+    import uuid
+    request_id = str(uuid.uuid4())
     start = perf_counter()
     endpoint = request.url.path
+    
+    # Add request ID to logger context
+    logger = logging.LoggerAdapter(app_logger, {'request_id': request_id})
+    
+    # Skip logging for health checks to reduce noise
+    if endpoint == "/health":
+        return await call_next(request)
 
     # Read body (non-stream) for small payloads ONLY (< 10 kB)
+    body_str = ""
     try:
         body_bytes = await request.body()
         if body_bytes and len(body_bytes) <= 10_240:  # 10 KB safety limit
             try:
                 body_str = body_bytes.decode("utf-8", errors="ignore")
-            except Exception:
-                body_str = str(body_bytes)[:1000]
-        else:
-            body_str = f"<{len(body_bytes)} bytes>" if body_bytes else "<empty>"
-    except Exception:
-        body_str = "<stream or large body>"
+                # Try to pretty print JSON if possible
+                try:
+                    json_body = json.loads(body_str)
+                    body_str = json.dumps(json_body, indent=2)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            except Exception as e:
+                body_str = f"<binary data: {str(e)[:200]}>"
+        elif body_bytes:
+            body_str = f"<{len(body_bytes)} bytes>"
+    except Exception as e:
+        body_str = f"<error reading body: {str(e)}>"
 
-    # Log the request
-    log_request_start(
-        endpoint,
-        request.method,
-        headers=dict(request.headers),
-        remote_addr=request.client.host if request.client else None,
+    # Log the request with additional context
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get('user-agent', 'unknown')
+    
+    logger.info(
+        "[REQ] %s %s from %s | UA: %s | Body: %s", 
+        request.method, 
+        endpoint, 
+        client_ip,
+        user_agent,
+        body_str if body_str else "<no body>"
     )
-    if body_str:
-        log_request_payload(body_str, endpoint)
 
     try:
         response = await call_next(request)
-        # Log response summary only if no exception occurred
         duration_ms = (perf_counter() - start) * 1000
+        
+        # Log response summary
         status_code = getattr(response, "status_code", "<no response>")
-        log_response(status_code, f"<{status_code}>" if status_code else "<unknown>", endpoint)
-        app_logger.info("[PERF] %s %s completed in %.2f ms", request.method, endpoint, duration_ms)
+        logger.info(
+            "[RESP] %s %s -> %d | %.2f ms", 
+            request.method, 
+            endpoint, 
+            status_code,
+            duration_ms
+        )
+        
+        # Add request ID to response headers
+        response.headers["X-Request-ID"] = request_id
         return response
+        
     except Exception as exc:
-        # Log exception and re-raise so default handler still runs
-        log_error(str(exc), exc, endpoint=endpoint)
         duration_ms = (perf_counter() - start) * 1000
-        app_logger.error("[ERROR] %s %s failed after %.2f ms: %s", request.method, endpoint, duration_ms, str(exc))
+        logger.error(
+            "[ERROR] %s %s failed after %.2f ms: %s\n%s", 
+            request.method, 
+            endpoint, 
+            duration_ms, 
+            str(exc),
+            traceback.format_exc()
+        )
         raise
-
-    return response
 
 # --------------------------------------------------
 # Enhanced CORS middleware
