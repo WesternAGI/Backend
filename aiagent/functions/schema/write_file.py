@@ -1,5 +1,5 @@
 
-from utils.functions_metadata import function_schema
+from server.utils.functions_metadata import function_schema
 
 from datetime import datetime
 

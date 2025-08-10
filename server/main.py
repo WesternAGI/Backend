@@ -387,13 +387,35 @@ async def health_check():
 app.include_router(router, prefix="")
 
 if __name__ == "__main__":
+    """Entry point for running the backend with optional CLI arguments.
+
+    Examples
+    --------
+    Local development on a different port:
+        python -m server.main --port 7051
+
+    Explicit host & disable reload (e.g. in production):
+        python -m server.main --host 0.0.0.0 --port 8000 --no-reload
+    """
     import uvicorn
     import os
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run Thoth backend server")
+    parser.add_argument("--host", default="0.0.0.0", help="Interface to bind (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, help="Port to listen on (default: env PORT or 7050)")
+    parser.add_argument("--server", choices=["LOCAL", "PRODUCTION"], default="LOCAL", help="Environment label (reserved, currently informational)")
+    parser.add_argument("--no-reload", action="store_true", help="Disable auto-reload (useful for prod)")
+    args = parser.parse_args()
+
+    # Determine port precedence: CLI > env PORT > default
+    port = args.port if args.port is not None else int(os.getenv("PORT", 7050))
+
     uvicorn.run(
         "server.main:app",
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", 7050)),
-        reload=True,
-        timeout_keep_alive=300,  # Increase keep-alive timeout
-        proxy_headers=True,  # Trust X-Forwarded-* headers
+        host=args.host,
+        port=port,
+        reload=not args.no_reload,
+        timeout_keep_alive=300,
+        proxy_headers=True,
     )

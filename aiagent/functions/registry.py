@@ -33,8 +33,17 @@ class FunctionsRegistry:
                 for attr_name in dir(module):
                     attr = getattr(module, attr_name)
                     if callable(attr) and hasattr(attr, 'schema'):
+                        schema_obj = attr.schema
+                        # Ensure the attached schema is a JSON-serialisable dict.
+                        # Skip any callable/invalid schemas (e.g. class methods named `schema`).
+                        if callable(schema_obj):
+                            logger.debug(f"Skipping {attr_name} because its `schema` attribute is callable, not a dict.")
+                            continue
+                        if not isinstance(schema_obj, dict):
+                            logger.debug(f"Skipping {attr_name} because its `schema` attribute is not a dict: {type(schema_obj)}")
+                            continue
                         self.registry[attr_name] = attr
-                        self.schema_registry[attr_name] = attr.schema
+                        self.schema_registry[attr_name] = schema_obj
 
     def resolve_function(self, function_name: str, arguments_json: Optional[str] = None):
         func = self.registry.get(function_name)

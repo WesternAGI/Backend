@@ -100,6 +100,10 @@ def query_openai(
 
     #logging.info(f"Context messages: {messages}")
     
+    # Make current user id globally accessible to function tools
+    if aux_data and aux_data.get("current_user_id") is not None:
+        globals()["CURRENT_USER_ID"] = aux_data["current_user_id"]
+
     # Query OPENAI
     model_name = os.getenv("MODEL_NAME")
     response = client.chat.completions.create(
@@ -112,27 +116,60 @@ def query_openai(
     )
 
     response_message = response.choices[0].message
-    tool_calls = response_message.tool_calls
 
-    if tool_calls:
+    # Iterate until model returns a final message without further tool calls
+    max_tool_iterations = 5
+    iteration = 0
+    while True:
+        tool_calls = response_message.tool_calls
+        if not tool_calls or iteration >= max_tool_iterations:
+            break
+        iteration += 1
+        # Append the assistant message that triggered the tool call so that the
+        # subsequent `tool` role messages are valid according to the OpenAI
+        # chat format. Omitting this was causing the 400 error:
+        # "messages with role 'tool' must be a response to a preceeding message with 'tool_calls'."
+        messages.append({
+            "role": "assistant",
+            # The assistant content is typically empty when the model decides to
+            # call a tool.
+            "content": response_message.content or "",
+            # We must pass the full tool_calls array exactly as we received it.
+            "tool_calls": [tc.model_dump(exclude_none=True) for tc in tool_calls],
+        })
+
         for tool_call in tool_calls:
             function_name = tool_call.function.name
-            function_args = tool_call.function.arguments
-            function_result = tools.resolve_function(function_name, function_args)
-            messages.append({"role": "tool", "content": function_result})
+            raw_args = tool_call.function.arguments  # may be JSON string per OpenAI spec
 
+            # Ensure we have a dict before passing via **kwargs
+            try:
+                parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+            except Exception as e:
+                logging.error(f"Failed to parse arguments for {function_name}: {e}. Raw: {raw_args}")
+                parsed_args = {}
+
+            # Call through registry helper first (allows additional wrappers)
+            function_result = tools.resolve_function(function_name, parsed_args)
+
+            # If the concrete callable is present, execute directly as well
             if function_name in function_map:
                 try:
-                    function_response = function_map[function_name](
-                        **function_args)
-                    messages.append({
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "name": function_name,
-                        "content": function_response,
-                    })
+                    function_result = function_map[function_name](**parsed_args)
                 except Exception as e:
-                    logging.error(f"Error in {function_name}: {e}")
+                    logging.error(f"Error while executing {function_name}: {e}")
+
+            # Serialise result for message content
+            serialised_result = (
+                function_result if isinstance(function_result, str) else json.dumps(function_result, default=str)
+            )
+
+            messages.append({
+                "tool_call_id": tool_call.id,
+                "role": "tool",
+                "name": function_name,
+                "content": serialised_result,
+            })
         response = client.chat.completions.create(
             model=model_name, 
             messages=messages,

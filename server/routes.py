@@ -232,8 +232,7 @@ async def register(
     db_user = User(
         username=req.username,
         hashed_password=hashed_password,
-        phone_number=req.phone_number,
-        is_active=True
+        phone_number=req.phone_number
     )
     
     db.add(db_user)
@@ -470,12 +469,11 @@ async def upload_file(
                 db.commit()
                 
                 return {
-                    "status": "success",
                     "message": "File already exists with same content",
-                    "fileId": existing_file.fileId,
+                    "file_id": existing_file.fileId,
                     "filename": existing_file.filename,
                     "size": existing_file.size,
-                    "file_hash": existing_file.file_hash
+                    "hash": existing_file.file_hash
                 }
         
         # Log database connection status
@@ -786,7 +784,8 @@ async def query_endpoint(
                     long_term_memory=long_term_memory,
                     short_term_memory=short_term_memory,
                     max_tokens=10000,  # Default max tokens
-                    temperature=0.7  # Default temperature
+                    temperature=0.7,  # Default temperature
+                    aux_data={"current_user_id": user.userId}
                 )
                 logger.info("Successfully received response from AI")
             except Exception as e:

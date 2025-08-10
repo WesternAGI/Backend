@@ -2,6 +2,7 @@ from inspect import signature, Parameter
 import functools
 import re
 from typing import Callable, Dict, List
+import sys, types
 
 
 def parse_docstring(func: Callable) -> Dict[str, str]:
@@ -24,9 +25,15 @@ def parse_docstring(func: Callable) -> Dict[str, str]:
     return param_descriptions
 
 
-def function_schema(name: str, description: str, required_params: List[str]):
+from typing import Optional
+
+def function_schema(name: str, description: str, required_params: List[str], optional_params: Optional[List[str]] = None):
     def decorator_function(func: Callable) -> Callable:
-        if not all(param in signature(func).parameters for param in required_params):
+        nonlocal optional_params
+        if optional_params is None:
+            optional_params = []
+        all_params_sig = signature(func).parameters
+        if not all(param in all_params_sig for param in required_params):
             raise ValueError(f"Missing required parameters in {func.__name__}")
 
         @functools.wraps(func)
@@ -36,13 +43,12 @@ def function_schema(name: str, description: str, required_params: List[str]):
         params = signature(func).parameters
         param_descriptions = parse_docstring(func)
 
-        serialized_params = {
-            param_name: {
+        serialized_params = {}
+        for param_name in required_params + list(optional_params):
+            serialized_params[param_name] = {
                 "type": "string",
                 "description": param_descriptions.get(param_name, "No description")
             }
-            for param_name in required_params
-        }
 
         wrapper.schema = {
             "name": name,
@@ -55,3 +61,10 @@ def function_schema(name: str, description: str, required_params: List[str]):
         }
         return wrapper
     return decorator_function
+
+# ---------------------------------------------------------------------------
+# Legacy import shim: expose this module as 'utils.functions_metadata'
+# ---------------------------------------------------------------------------
+_utils_pkg = sys.modules.setdefault('utils', types.ModuleType('utils'))
+_utils_pkg.functions_metadata = sys.modules[__name__]
+sys.modules['utils.functions_metadata'] = sys.modules[__name__]
