@@ -240,7 +240,7 @@ async def register(
     db.refresh(db_user)
     
     return {
-        "user_id": db_user.id,
+        "user_id": db_user.userId,
         "username": db_user.username,
         "message": "User registered successfully"
     }
