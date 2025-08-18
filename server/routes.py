@@ -938,12 +938,21 @@ async def update_active_item(
             
         # Validate required fields
         device = data.get('device')
-        path = data.get('path', '')
-        title = data.get('title', '')
-        
         if not device:
             log_error("Missing device identifier", None, {"endpoint": "/active"}, "/active")
             return JSONResponse({"error": "Missing device identifier"}, status_code=400)
+
+        # Accept multiple shapes
+        # Browser: title/url/content
+        # Desktop/Mobile: app/content
+        kind = 'browser' if ('url' in data or 'title' in data) else 'app'
+        title = data.get('title', '') if kind == 'browser' else data.get('app', '')
+        url = data.get('url', '') if kind == 'browser' else ''
+        content = data.get('content', '') or ''
+        path = data.get('path', url)  # keep backward compat; prefer url as path when browser
+        # Truncate large content
+        if isinstance(content, str) and len(content) > 8000:
+            content = content[:8000]
             
         # Get user's short-term memory file
         stm_file = db.query(DBFile).filter(
@@ -962,41 +971,150 @@ async def update_active_item(
             log_error(f"Invalid short-term memory format: {str(e)}", e, {"userId": user.userId}, "/active")
             raise HTTPException(status_code=500, detail="Invalid short-term memory format")
             
-        # Initialize active list if it doesn't exist
-        if 'active' not in memory:
-            memory['active'] = []
-            
+        # Initialize structures if missing (use only active_history to be consistent)
+        if 'active_history' not in memory or not isinstance(memory['active_history'], dict):
+            memory['active_history'] = {}
+
         # Create new active item
         new_item = {
             'device': device,
+            'type': kind,
             'path': path,
             'title': title,
+            'url': url,
+            'content_preview': (content[:200] if isinstance(content, str) else ''),
             'timestamp': datetime.utcnow().isoformat()
         }
-        
-        # Update existing item or add new one
-        updated = False
-        for i, item in enumerate(memory['active']):
-            if item.get('device') == device:
-                memory['active'][i] = new_item
-                updated = True
+
+        # Update per-device history (most recent first, cap 20 beyond current)
+        history = memory['active_history'].get(device, [])
+        history.insert(0, new_item)
+        # Deduplicate consecutive identical URLs/titles to avoid noise
+        deduped = []
+        seen = set()
+        for h in history:
+            key = (h.get('title', ''), h.get('url', ''), h.get('path', ''))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(h)
+            if len(deduped) >= 21:
                 break
-                
-        if not updated:
-            memory['active'].append(new_item)
-            
-        # Update the file in database
+        memory['active_history'][device] = deduped
+
+        # Persist STM changes
         stm_file.content = json.dumps(memory).encode('utf-8')
         stm_file.size = len(stm_file.content)
         db.commit()
-        
-        # Log success
-        #logger.info(f"[SERVER] Updated active item for user {user.userId}, device {device}")
-        
-        # Return success response with updated active items
+
+        # Build custom prompt referencing current and up to 20 previous items
+        prev_items = deduped[1:21] if len(deduped) > 1 else []
+        prev_lines = []
+        for it in prev_items:
+            if it.get('type') == 'browser':
+                prev_lines.append(f"- {it.get('title','')} | {it.get('url','')} @ {it.get('timestamp','')}")
+            else:
+                prev_lines.append(f"- {it.get('title','')} (app) @ {it.get('timestamp','')}")
+        prev_block = "\n".join(prev_lines) if prev_lines else "(no previous items)"
+
+        current_line = (
+            f"Title: {new_item.get('title','')}\n"
+            f"URL/Path: {new_item.get('url') or new_item.get('path','')}\n"
+            f"Type: {new_item.get('type','')}\n"
+            f"When: {new_item.get('timestamp','')}\n"
+        )
+        if content:
+            current_line += f"Content (may be truncated):\n{content}"
+
+        instruction = (
+            "You are assisting the user across devices. The user's phone number is stored in long-term memory. "
+            "If the current website indicates the user is watching a video, send an SMS using the available tool call "
+            "with a relevant joke to the content. If the page is an academic article, reply with a single concise "
+            "sentence relevant to the article as plain text (no tool call). Otherwise, return an empty string. "
+            "Prefer tool calls only for the SMS case; for academic articles, respond only with text."
+        )
+
+        user_query = (
+            f"{instruction}\n\n"
+            f"Current Item:\n{current_line}\n\n"
+            f"Previous (up to 20):\n{prev_block}"
+        )
+
+        # Prepare memory managers from DB files (similar to query_endpoint)
+        def get_or_create_memory_file(filename, default_content='{}'):
+            file = db.query(DBFile).filter(DBFile.userId == user.userId, DBFile.filename == filename).first()
+            if not file:
+                file = DBFile(
+                    userId=user.userId,
+                    filename=filename,
+                    content=default_content.encode('utf-8'),
+                    content_type='application/json',
+                    size=len(default_content),
+                )
+                db.add(file)
+                db.commit()
+                db.refresh(file)
+            return file
+
+        try:
+            longterm_file = get_or_create_memory_file("long_term_memory.json")
+            shortterm_file = get_or_create_memory_file("short_term_memory.json")
+            lt_str = longterm_file.content.decode('utf-8') if longterm_file.content else "{}"
+            st_str = shortterm_file.content.decode('utf-8') if shortterm_file.content else "{}"
+            lt_data = json.loads(lt_str) if lt_str.strip() else {}
+            st_data = json.loads(st_str) if st_str.strip() else {}
+            long_term_memory = LongTermMemoryManager(memory_content=lt_data)
+            short_term_memory = ShortTermMemoryManager(memory_content=st_data)
+        except Exception as e:
+            logger.error(f"[ACTIVE] Memory init error for user {user.userId}: {e}")
+            long_term_memory = LongTermMemoryManager()
+            short_term_memory = ShortTermMemoryManager()
+            st_data = {}
+
+        # Persist the prompt as a Query row and call AI (mirrors query_endpoint flow)
+        chat_id = f"active:{device}"
+        db_query = Query(userId=user.userId, chatId=chat_id, query_text=user_query)
+        db.add(db_query)
+        db.commit()
+        db.refresh(db_query)
+
+        ai_response = query_openai(
+            query=user_query,
+            long_term_memory=long_term_memory,
+            short_term_memory=short_term_memory,
+            max_tokens=2000,
+            temperature=0.5,
+            aux_data={"current_user_id": user.userId},
+        )
+
+        # Update conversations in STM file
+        try:
+            conversations = st_data.get("conversations", []) if isinstance(st_data, dict) else []
+            summary = ai_query_handler.summarize_conversation(user_query, ai_response)
+            updated_lt = ai_query_handler.update_memory(user_query, ai_response, long_term_memory)
+            conversations.append({"query": user_query, "response": ai_response, "summary": summary})
+            if len(conversations) > 50:
+                conversations = conversations[-50:]
+            if isinstance(st_data, dict):
+                st_data["conversations"] = conversations
+                shortterm_file.content = json.dumps(st_data).encode('utf-8')
+                shortterm_file.size = len(shortterm_file.content)
+                db.commit()
+            if updated_lt and longterm_file:
+                longterm_file.content = json.dumps(long_term_memory.get_content()).encode('utf-8')
+                longterm_file.size = len(longterm_file.content)
+                db.commit()
+        except Exception as e:
+            logger.error(f"[ACTIVE] Failed to update conversations/memory: {e}")
+
+        show_notification = bool(ai_response and isinstance(ai_response, str) and ai_response.strip())
         response = {
             "status": "success",
-            "active": memory['active']
+            "active_history": memory['active_history'].get(device, []),
+            "chat_id": chat_id,
+            "queryId": db_query.queryId,
+            "response": ai_response or "",
+            "show_notification": show_notification,
         }
         log_response(200, response, '/active')
         return JSONResponse(response, status_code=200)
