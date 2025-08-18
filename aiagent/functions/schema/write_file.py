@@ -1,9 +1,8 @@
-
+from typing import Dict, Any
 from server.utils.functions_metadata import function_schema
 
 from datetime import datetime
 
-# Optional heavy imports guarded to prevent circular/import errors in limited environments
 try:
     from server.db import SessionLocal, File as DBFile, DATABASE_URL  # type: ignore
     from server.utils import compute_sha256
@@ -16,7 +15,6 @@ except Exception:  # pragma: no cover
     from logging import getLogger
     logger = getLogger(__name__)
 
-# Folder where on-disk copies are saved
 
 @function_schema(
     name="write_file",
@@ -24,7 +22,7 @@ except Exception:  # pragma: no cover
     required_params=["filename", "content", "user_id"],
     optional_params=["mode"]
 )
-def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite"):
+def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite") -> Dict[str, Any]:
     """Write content to a file, create if it doesn't exist.
 
     Args:
@@ -34,14 +32,7 @@ def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite
         user_id (int): The owning user's ID.
 
     Returns:
-        dict: Details about the written file. Example::
-
-            {
-                "status": "success",
-                "filename": "example.txt",
-                "mode": "overwrite",
-                "bytes_written": 1024
-            }
+        dict: Details about the written file.
     """
 
     if mode not in {"overwrite", "append"}:
@@ -59,10 +50,8 @@ def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite
             return uid
         if isinstance(uid, str):
             s = uid.strip()
-            # Fast path: pure digits
             if s.isdigit():
                 return int(s)
-            # Extract trailing number sequence
             import re
             m = re.search(r"(\d+)$", s)
             if m:
@@ -76,7 +65,6 @@ def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite
     bytes_content = content.encode("utf-8")
     bytes_written = len(bytes_content)
 
-    # Store/Update in database (DBFile) only
     if not (SessionLocal and DBFile):
         raise RuntimeError("Database layer unavailable; cannot store files.")
 
@@ -84,7 +72,6 @@ def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite
     if DATABASE_URL:
         logger.info(f"[write_file] Using DATABASE_URL: {DATABASE_URL}")
 
-    # Proceed with DB operations
     db = SessionLocal()
     try:
         record = db.query(DBFile).filter(
@@ -119,7 +106,6 @@ def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite
         try:
             db.commit()
             db.refresh(record)
-            # Verify visibility
             verify_count = db.query(DBFile).filter(DBFile.userId == user_id_int, DBFile.filename == filename).count()
             logger.info(f"[write_file] Commit OK: fileId={record.fileId}, total_size={record.size}, verify_count={verify_count}")
         except Exception as e:
@@ -137,4 +123,3 @@ def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite
         "bytes_written": bytes_written,
         "total_size": record.size,
     }
-    
