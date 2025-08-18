@@ -1124,6 +1124,7 @@ async def update_active_item(
 
         show_notification = bool(ai_response and isinstance(ai_response, str) and ai_response.strip())
         empty_response = ""
+        show_notification = False
         response = {
             "status": "success",
             "active_history": memory['active_history'].get(device, []),
