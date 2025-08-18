@@ -19,6 +19,8 @@ import uuid
 import mimetypes
 import base64
 import time
+import hashlib
+import hmac
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Union
 from urllib.parse import quote
@@ -1843,36 +1845,97 @@ async def handle_twilio_incoming_message(
         return Response(content=twiml_error_reply, media_type="application/xml", status_code=500)
 
 
+_STATUS_ORDER = {
+    "queued": 0,
+    "accepted": 1,
+    "sending": 2,
+    "sent": 3,
+    "delivered": 4,
+    "undelivered": 5,
+    "failed": 6,
+}
+
+# Best-effort in-memory caches (per-process). For full durability, persist to DB.
+_LAST_STATUS: Dict[str, str] = {}
+_IDEMPOTENCY_SEEN: Dict[str, float] = {}
+_IDEMPOTENCY_TTL_SECONDS = 60 * 15  # 15 minutes
+
+def _cleanup_idempotency_cache(now_ts: float) -> None:
+    stale = [k for k, ts in _IDEMPOTENCY_SEEN.items() if now_ts - ts > _IDEMPOTENCY_TTL_SECONDS]
+    for k in stale:
+        _IDEMPOTENCY_SEEN.pop(k, None)
+
+def _validate_twilio_signature(request: Request, auth_token: str, form_data: Dict[str, Any]) -> bool:
+    """Validate Twilio signature per docs using HMAC-SHA1 over URL+params."""
+    try:
+        signature = request.headers.get("x-twilio-signature", "")
+        # URL must be the full URL Twilio requested
+        url = str(request.url)
+        # Concatenate URL and params sorted by key
+        data = url + ''.join([k + str(form_data[k]) for k in sorted(form_data.keys())])
+        mac = hmac.new(auth_token.encode("utf-8"), msg=data.encode("utf-8"), digestmod=hashlib.sha1)
+        expected = base64.b64encode(mac.digest()).decode()
+        return hmac.compare_digest(signature, expected)
+    except Exception:
+        return False
+
+
 @router.post("/api/webhooks/twilio/message-status")
 async def handle_twilio_message_status(
-    request: Request, 
-    MessageSid: str = Form(...), 
+    request: Request,
+    MessageSid: str = Form(...),
     MessageStatus: str = Form(...),
     To: str = Form(None),
     From: str = Form(None),
     ErrorCode: str = Form(None)
 ):
-    """Handle message status callbacks from Twilio.
-    
-    Args:
-        request: The incoming HTTP request
-        MessageSid: The unique ID of the message
-        MessageStatus: The delivery status of the message
-        To: The recipient phone number (optional)
-        From: The sender phone number (optional)
-        ErrorCode: Error code if message failed (optional)
-    """
+    """Handle message status callbacks from Twilio with validation, dedupe, and monotonic state updates."""
     endpoint = "/api/webhooks/twilio/message-status"
     client_host = request.client.host if request.client else "unknown_client"
-    log_request_start(endpoint, "POST", dict(request.headers), client_host)
-    
+    headers = dict(request.headers)
+    log_request_start(endpoint, "POST", headers, client_host)
+
+    # Parse the full form to use for signature verification
+    form = await request.form()
+    form_dict = {k: v for k, v in form.items()}
+
+    # Validate Twilio signature
+    auth_token = os.getenv("TWILIO_AUTH_TOKEN", "")
+    if not auth_token:
+        logger.warning(f"[{endpoint}] TWILIO_AUTH_TOKEN not set; skipping signature validation")
+    else:
+        if not _validate_twilio_signature(request, auth_token, form_dict):
+            log_error("Invalid Twilio signature", context={"MessageSid": MessageSid}, endpoint=endpoint)
+            return JSONResponse(status_code=403, content={"detail": "invalid signature"})
+
+    # Idempotency dedupe
+    idem = headers.get("i-twilio-idempotency-token") or headers.get("I-Twilio-Idempotency-Token")
+    now_ts = time.time()
+    _cleanup_idempotency_cache(now_ts)
+    if idem:
+        if idem in _IDEMPOTENCY_SEEN:
+            logger.info(f"[{endpoint}] Duplicate webhook ignored (idempotency): token={idem}, sid={MessageSid}")
+            return {"status": "ok"}
+        _IDEMPOTENCY_SEEN[idem] = now_ts
+
+    # Monotonic status enforcement
+    old_status = _LAST_STATUS.get(MessageSid)
+    new_status = (MessageStatus or "").lower()
+    if old_status is not None:
+        old_rank = _STATUS_ORDER.get(old_status, -1)
+        new_rank = _STATUS_ORDER.get(new_status, -1)
+        if new_rank < old_rank:
+            logger.info(f"[{endpoint}] Ignoring regressive status for {MessageSid}: {old_status} -> {new_status}")
+            log_response(200, "OK", endpoint)
+            return {"status": "ok", "ignored": True}
+
+    _LAST_STATUS[MessageSid] = new_status
+
     # Log the status update
     logger.info(f"Twilio Message Status Update - SID: {MessageSid}, Status: {MessageStatus}")
-    
-    # If there's an error code, log it as an error
     if ErrorCode:
         logger.error(f"Message {MessageSid} failed with error code: {ErrorCode}")
-    
+
     log_response(200, "OK", endpoint)
     return {"status": "ok"}
 

@@ -5,18 +5,22 @@ from datetime import datetime
 
 # Optional heavy imports guarded to prevent circular/import errors in limited environments
 try:
-    from server.db import SessionLocal, File as DBFile
+    from server.db import SessionLocal, File as DBFile, DATABASE_URL  # type: ignore
     from server.utils import compute_sha256
+    from server.utils.logging_utils import logger
 except Exception:  # pragma: no cover
     SessionLocal = None  # type: ignore
     DBFile = None  # type: ignore
     compute_sha256 = None  # type: ignore
+    DATABASE_URL = None  # type: ignore
+    from logging import getLogger
+    logger = getLogger(__name__)
 
 # Folder where on-disk copies are saved
 
 @function_schema(
     name="write_file",
-    description="Create or update a user file, storing its content on disk (assets folder) and in the database.",
+    description="Create or update a user file, storing its content on the database.",
     required_params=["filename", "content", "user_id"],
     optional_params=["mode"]
 )
@@ -50,7 +54,11 @@ def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite
     if not (SessionLocal and DBFile):
         raise RuntimeError("Database layer unavailable; cannot store files.")
 
-        # Proceed with DB operations
+    logger.info(f"[write_file] Begin - user_id={user_id}, filename={filename}, mode={mode}, bytes={bytes_written}")
+    if DATABASE_URL:
+        logger.info(f"[write_file] Using DATABASE_URL: {DATABASE_URL}")
+
+    # Proceed with DB operations
     db = SessionLocal()
     try:
         record = db.query(DBFile).filter(
@@ -60,6 +68,7 @@ def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite
         now = datetime.utcnow()
 
         if record:
+            logger.info(f"[write_file] Existing record found: fileId={record.fileId}, size={record.size}")
             if mode == "append":
                 combined = (record.content or b"") + bytes_content
                 record.content = combined
@@ -70,6 +79,7 @@ def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite
             record.file_hash = compute_sha256(record.content) if compute_sha256 else None
             record.last_modified = now
         else:
+            logger.info("[write_file] No existing record; creating new one")
             record = DBFile(
                 userId=user_id,
                 filename=filename,
@@ -80,9 +90,16 @@ def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite
                 file_hash=compute_sha256(bytes_content) if compute_sha256 else None,
             )
             db.add(record)
-
-        db.commit()
-        db.refresh(record)
+        try:
+            db.commit()
+            db.refresh(record)
+            # Verify visibility
+            verify_count = db.query(DBFile).filter(DBFile.userId == user_id, DBFile.filename == filename).count()
+            logger.info(f"[write_file] Commit OK: fileId={record.fileId}, total_size={record.size}, verify_count={verify_count}")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[write_file] Commit failed: {str(e)}", exc_info=True)
+            raise
     finally:
         db.close()
 

@@ -16,20 +16,40 @@ from datetime import datetime
 from typing import Optional, Dict, Any, Union
 from flask import request
 
-# Set up logger
+# Set up logger (guarded to avoid duplicate handlers on reload/worker spawn)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+logger.propagate = False  # Prevent double logging via root/uvicorn handlers
 
-# Create console handler with a higher log level
-ch = logging.StreamHandler()
-ch.setLevel(logging.INFO)
+if not logger.handlers:
+    # Create console handler with a higher log level
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
 
-# Create formatter and add it to the handler
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-ch.setFormatter(formatter)
+    # Create formatter and add it to the handler
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    ch.setFormatter(formatter)
 
-# Add the handler to the logger
-logger.addHandler(ch)
+    # Add the handler to the logger
+    logger.addHandler(ch)
+
+def get_logger(name: str = None) -> logging.Logger:
+    """Return a configured logger with duplicate-handler protection.
+
+    Args:
+        name: Optional child logger name.
+    """
+    if not name:
+        return logger
+    child = logging.getLogger(name)
+    child.propagate = False
+    if not child.handlers:
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        ch.setFormatter(formatter)
+        child.addHandler(ch)
+    return child
 
 def log_server_lifecycle(event: str, details: Optional[Dict] = None) -> None:
     """Log server lifecycle events with detailed information.
