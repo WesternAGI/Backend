@@ -1129,7 +1129,7 @@ async def update_active_item(
             "active_history": memory['active_history'].get(device, []),
             "chat_id": chat_id,
             "queryId": db_query.queryId,
-            "response": empty_resopnse, 
+            "response": empty_response, 
             "show_notification": show_notification,
         }
         log_response(200, response, '/active')
