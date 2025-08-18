@@ -949,6 +949,7 @@ async def update_active_item(
         title = data.get('title', '') if kind == 'browser' else data.get('app', '')
         url = data.get('url', '') if kind == 'browser' else ''
         content = data.get('content', '') or ''
+        focused = bool(data.get('focused', True))
         path = data.get('path', url)  # keep backward compat; prefer url as path when browser
         # Truncate large content
         if isinstance(content, str) and len(content) > 8000:
@@ -983,6 +984,7 @@ async def update_active_item(
             'title': title,
             'url': url,
             'content_preview': (content[:200] if isinstance(content, str) else ''),
+            'focused': focused,
             'timestamp': datetime.utcnow().isoformat()
         }
 
@@ -1007,6 +1009,19 @@ async def update_active_item(
         stm_file.size = len(stm_file.content)
         db.commit()
 
+        # If not focused, do not trigger AI/SMS; just persist STM and return
+        if not focused:
+            response = {
+                "status": "success",
+                "active_history": memory['active_history'].get(device, []),
+                "chat_id": f"active:{device}",
+                "queryId": None,
+                "response": "",
+                "show_notification": False,
+            }
+            log_response(200, response, '/active')
+            return JSONResponse(response, status_code=200)
+
         # Build custom prompt referencing current and up to 20 previous items
         prev_items = deduped[1:21] if len(deduped) > 1 else []
         prev_lines = []
@@ -1029,7 +1044,7 @@ async def update_active_item(
         instruction = (
             "You are assisting the user across devices. The user's phone number is stored in long-term memory. "
             "If the current website indicates the user is watching a video, send an SMS using the available tool call "
-            "with a relevant joke to the content. If the page is an academic article, reply with a single concise "
+            "Make sure to send a unique and relevant joke to the content of the video. If the page is an academic article, reply with a single concise "
             "sentence relevant to the article as plain text (no tool call). Otherwise, return an empty string. "
             "Prefer tool calls only for the SMS case; for academic articles, respond only with text."
         )
@@ -1304,6 +1319,7 @@ class DeviceHeartbeatRequest(BaseModel):
     current_app: Optional[str] = None
     current_page: Optional[str] = None
     current_url: Optional[str] = None
+    focused: Optional[bool] = None
     
     @validator('device_id')
     def validate_device_id(cls, v):
