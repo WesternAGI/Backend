@@ -47,6 +47,32 @@ def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite
     if mode not in {"overwrite", "append"}:
         raise ValueError("mode must be either 'overwrite' or 'append'")
 
+    # Normalize user_id to int (handle cases like "user-1234")
+    def _coerce_user_id(uid) -> int:
+        """Attempt to coerce uid to int.
+        - If uid is an int, return as-is.
+        - If uid is a numeric string, convert directly.
+        - If uid is a mixed string like 'user-1234', extract the last digit sequence.
+        - Otherwise, raise ValueError with guidance.
+        """
+        if isinstance(uid, int):
+            return uid
+        if isinstance(uid, str):
+            s = uid.strip()
+            # Fast path: pure digits
+            if s.isdigit():
+                return int(s)
+            # Extract trailing number sequence
+            import re
+            m = re.search(r"(\d+)$", s)
+            if m:
+                coerced = int(m.group(1))
+                logger.info(f"[write_file] Coerced string user_id='{uid}' to integer {coerced}")
+                return coerced
+        raise ValueError("user_id must be an integer or contain a trailing numeric ID (e.g., 'user-1234')")
+
+    user_id_int = _coerce_user_id(user_id)
+
     bytes_content = content.encode("utf-8")
     bytes_written = len(bytes_content)
 
@@ -54,7 +80,7 @@ def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite
     if not (SessionLocal and DBFile):
         raise RuntimeError("Database layer unavailable; cannot store files.")
 
-    logger.info(f"[write_file] Begin - user_id={user_id}, filename={filename}, mode={mode}, bytes={bytes_written}")
+    logger.info(f"[write_file] Begin - user_id={user_id_int}, filename={filename}, mode={mode}, bytes={bytes_written}")
     if DATABASE_URL:
         logger.info(f"[write_file] Using DATABASE_URL: {DATABASE_URL}")
 
@@ -62,7 +88,7 @@ def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite
     db = SessionLocal()
     try:
         record = db.query(DBFile).filter(
-            DBFile.userId == user_id,
+            DBFile.userId == user_id_int,
             DBFile.filename == filename
         ).first()
         now = datetime.utcnow()
@@ -81,7 +107,7 @@ def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite
         else:
             logger.info("[write_file] No existing record; creating new one")
             record = DBFile(
-                userId=user_id,
+                userId=user_id_int,
                 filename=filename,
                 size=bytes_written,
                 content=bytes_content,
@@ -94,7 +120,7 @@ def write_file(filename: str, content: str, user_id: int, mode: str = "overwrite
             db.commit()
             db.refresh(record)
             # Verify visibility
-            verify_count = db.query(DBFile).filter(DBFile.userId == user_id, DBFile.filename == filename).count()
+            verify_count = db.query(DBFile).filter(DBFile.userId == user_id_int, DBFile.filename == filename).count()
             logger.info(f"[write_file] Commit OK: fileId={record.fileId}, total_size={record.size}, verify_count={verify_count}")
         except Exception as e:
             db.rollback()
