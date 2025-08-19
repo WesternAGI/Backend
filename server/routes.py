@@ -1045,10 +1045,8 @@ async def update_active_item(
 
         instruction = (
             "You are assisting the user across devices. The user's phone number is stored in long-term memory. "
-            "If the current website indicates the user is watching a video, send an SMS using the available tool call "
-            "Make sure to send a unique and relevant joke to the content of the video. If the page is an academic article, reply with a single concise "
-            "sentence relevant to the article as plain text (no tool call). Otherwise, return an empty string. "
-            "Prefer tool calls only for the SMS case; for academic articles, respond only with text."
+            "If the current website indicates the user is a youtube video, send an SMS informing the user that he is watching a video. "
+            "If the current website indicates the user is an academic article, send an SMS informing the user that he is reading an academic article. "
         )
 
         user_query = (
@@ -1125,12 +1123,14 @@ async def update_active_item(
             logger.error(f"[ACTIVE] Failed to update conversations/memory: {e}")
 
         show_notification = bool(ai_response and isinstance(ai_response, str) and ai_response.strip())
+        empty_response = ""
+        show_notification = False
         response = {
             "status": "success",
             "active_history": memory['active_history'].get(device, []),
             "chat_id": chat_id,
             "queryId": db_query.queryId,
-            "response": ai_response or "",
+            "response": empty_response, 
             "show_notification": show_notification,
         }
         log_response(200, response, '/active')
